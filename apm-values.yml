@@ -11,7 +11,7 @@ replicaCount: 1
 
 # Create HorizontalPodAutoscaler object when kind is Deployment
 autoscaling:
-  enabled: false
+  enabled: true
   minReplicas: 2
   maxReplicas: 10
   metrics:
@@ -117,12 +117,12 @@ config:
 
   # When a key contains a period, use this format for setting values on the command line:
   # --set config."output\.file".enabled=false
-  # output.file:
-  #   # enabled: false
-  #   path: "/usr/share/apm-server/data"
-  #   filename: apm-server
-  #   rotate_every_kb: 10000
-  #   number_of_files: 5
+  output.file:
+    enabled: false
+    path: "/usr/share/apm-server/data"
+    filename: apm-server
+    rotate_every_kb: 10000
+    number_of_files: 5
 
   ## Set output.file.enabled to false to enable elasticsearch
   output.elasticsearch:
