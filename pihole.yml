@@ -40,20 +40,23 @@ spec:
   loadBalancerIP: 192.168.150.1
   ports:
   - port: 53
+    name: "dns"
     targetPort: 53
-    protocol: tcp
-  - port: 53
-    targetPort: 53
-    protocol: udp
-  - port: 67
-    targetPort: 67
-    protocol: udp
+    protocol: TCP
+    #- port: 53
+    #  targetPort: 53
+    #  protocol: UDP
+    #- port: 67
+    #  targetPort: 67
+    #  protocol: UDP
   - port: 80
+    name: "web"
     targetPort: 80
-    protocol: tcp
+    protocol: TCP
   - port: 443
+    name: "web-ssl"
     targetPort: 443
-    protocol: tcp
+    protocol: TCP
   selector:
     app: pihole
   type: LoadBalancer
