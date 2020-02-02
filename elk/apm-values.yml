@@ -32,7 +32,7 @@ updateStrategy: {}
 
 service:
   enabled: true
-  type: ClusterIP
+  type: LoadBalancer
   port: 8200
   # portName: apm-server-svc
   # clusterIP: None
