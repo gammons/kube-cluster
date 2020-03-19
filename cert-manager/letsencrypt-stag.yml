@@ -1,0 +1,15 @@
+apiVersion: cert-manager.io/v1alpha2
+kind: ClusterIssuer
+metadata:
+ name: letsencrypt-stag
+ namespace: default
+spec:
+ acme:
+   email: grant@grant.dev
+   privateKeySecretRef:
+     name: letsencrypt-stag-key
+   server: https://acme-staging-v02.api.letsencrypt.org/directory
+   solvers:
+   - http01:
+       ingress:
+         class: nginx
