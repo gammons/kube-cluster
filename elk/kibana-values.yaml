@@ -3,12 +3,10 @@ service:
   type: LoadBalancer
   enabled: true
   port: 5601
-  loadBalancerIP: 192.168.150.100
-  externalIPs:
-  - 192.168.150.100
   nodePort: ""
   labels: {}
   annotations: {}
+    metallb.universe.tf/address-pool: default
     # cloud.google.com/load-balancer-type: "Internal"
     # service.beta.kubernetes.io/aws-load-balancer-internal: 0.0.0.0/0
     # service.beta.kubernetes.io/azure-load-balancer-internal: "true"
