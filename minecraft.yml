@@ -57,6 +57,8 @@ spec:
         env:
         - name: EULA
           value: "TRUE"
+        - name: MEMORY
+          value: "3G"
         - name: TYPE
           value: "SPONGEVANILLA"
       volumes:
