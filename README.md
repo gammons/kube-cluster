@@ -13,3 +13,7 @@ Then apply the configuration in `metallb-config.yml`
 ### ELK
 
 Follow the README in the `elk/` directory
+
+### Prometheus
+
+`helm install prometheus prometheus-community/prometheus -n prometheus`
