@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-sevice
+  namespace: prometheus
+  annotations:
+    metallb.universe.tf/address-pool: default
+spec:
+  ports:
+  - port: 80
+    targetPort: 3000
+  selector:
+    app.kubernetes.io/name: grafana
+  type: LoadBalancer
+
