@@ -1,15 +1,16 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: kibana-ip-sevice
+  name: prometheus-sevice
   namespace: prometheus
   annotations:
     metallb.universe.tf/address-pool: default
 spec:
   ports:
   - port: 80
-    targetPort: 5601
+    targetPort: 9090
   selector:
     app: prometheus
+    component: server
   type: LoadBalancer
 
