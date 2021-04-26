@@ -1,0 +1,11 @@
+architecture: replication
+primary:
+  persistence:
+    annotations:
+      volume.beta.kubernetes.io/storage-class: "nfs-client"
+    storageClass: "nfs-client"
+secondary:
+  persistence:
+    annotations:
+      volume.beta.kubernetes.io/storage-class: "nfs-client"
+    storageClass: "nfs-client"
