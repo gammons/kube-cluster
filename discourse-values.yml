@@ -62,7 +62,7 @@ discourse:
   ## Discourse site name
   ## ref: https://github.com/bitnami/bitnami-docker-discourse#environment-variables
   ##
-  siteName: 'My Site!'
+  siteName: 'The Bored'
   ## User of the application
   ## ref: https://github.com/bitnami/bitnami-docker-discourse#environment-variables
   ##
@@ -145,7 +145,21 @@ discourse:
   ##   - name: DISCOURSE_ELASTICSEARCH_URL
   ##     value: test
   ##
-  extraEnvVars: []
+  extraEnvVars:
+  - name: SMTP_HOST
+    value: "smtp.mailgun.org"
+  - name: SMTP_PORT
+    value: "587"
+  - name: SMTP_USER
+    valueFrom:
+      secretKeyRef:
+        name: smtp-auth
+        key: smtp-user
+  - name: SMTP_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: smtp-auth
+        key: smtp-password
 
   ## Array to add extra configmaps:
   ##
@@ -233,7 +247,21 @@ sidekiq:
   ##   - name: DISCOURSE_ELASTICSEARCH_URL
   ##     value: test
   ##
-  extraEnvVars: []
+  extraEnvVars:
+  - name: SMTP_HOST
+    value: "smtp.mailgun.org"
+  - name: SMTP_PORT
+    value: "587"
+  - name: SMTP_USER
+    valueFrom:
+      secretKeyRef:
+        name: smtp-auth
+        key: smtp-user
+  - name: SMTP_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: smtp-auth
+        key: smtp-password
 
   ## Array to add extra configmaps:
   ##
