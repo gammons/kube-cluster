@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: minecraft-world-backup
+  namespace: minecraft-new
+spec:
+spec:
+  restartPolicy: Never
+  containers:
+  - name: minecraft-world-backup
+    image: gammons1/minecraft-world-backup:2
+    volumeMounts:
+    - name: minecraft-volume
+      mountPath: "/data"
+    env:
+      - name: AWS_ACCESS_KEY_ID
+        valueFrom:
+          secretKeyRef:
+            name: s3-creds
+            key: aws-access-key-id
+      - name: AWS_SECRET_ACCESS_KEY
+        valueFrom:
+          secretKeyRef:
+            name: s3-creds
+            key: aws-secret-access-key
+    command: ['sh','-c','sleep 3600']
+  volumes:
+  - name: minecraft-volume
+    persistentVolumeClaim:
+      claimName: minecraft-claim
