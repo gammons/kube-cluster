@@ -4,7 +4,7 @@ metadata:
   name: minecraft-world-backup
   namespace: minecraft-new
 spec:
-  schedule: "0 */4 * * *"
+  schedule: "0 20 * * *"
   jobTemplate:
     spec:
       template:
