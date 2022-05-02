@@ -1,0 +1,11 @@
+cluster_name: cactus
+network:
+  plugin: canal
+ssh_key_path: /home/grant/.ssh/cluster_id_rsa
+nodes:
+  - address: 192.168.235.220
+    user: grant
+    role:
+      - controlplane
+      - etcd
+      - worker
