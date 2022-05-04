@@ -1,0 +1,5 @@
+- name: Set up static-ip
+  hosts: nfs-server
+  remote_user: ubuntu
+  roles:
+    - nfs-server

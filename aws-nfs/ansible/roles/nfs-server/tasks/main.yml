@@ -1,0 +1,25 @@
+- name: install nfs-kernel-server
+  become: true
+  apt:
+    name: nfs-kernel-server
+    state: present
+
+- name: create shared directory
+  become: true
+  file:
+    path: /nfs
+    state: directory
+    mode: '0755'
+
+- name: export shared directory
+  become: true
+  lineinfile:
+    path: /etc/exports
+    line: "/nfs    *(rw,sync,no_root_squash)"
+
+- name: enable nfs-server in systemd
+  become: true
+  systemd:
+    name: nfs-kernel-server
+    state: started
+    enabled: yes
