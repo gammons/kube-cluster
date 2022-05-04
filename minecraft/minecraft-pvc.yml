@@ -5,10 +5,11 @@ metadata:
   name: minecraft-claim
   namespace: minecraft-new
   annotations:
-    volume.beta.kubernetes.io/storage-class: "nfs-client"
+    nfs.io/storage-path: "minecraft"
 spec:
+  storageClassName: nfs-client
   accessModes:
-  - ReadWriteOnce
+  - ReadWriteMany
   resources:
     requests:
       storage: 10Gi
