@@ -6,6 +6,8 @@ then, use tailscale to have the NFS server be part of the "local" network, shari
 1. Follow instructions in the `terraform` dir to create the server
 2. Provision the NFS server using the `ansible` dir
 
+(todo for later) the `/dev/xvdh` disk needs to be present in `/etc/fstab` in order to survive reboots.  Add this entry manually if you don't do this work.
+
 ### Other resources
 
 https://www.digitalocean.com/community/tutorials/how-to-set-up-an-nfs-mount-on-ubuntu-20-04
