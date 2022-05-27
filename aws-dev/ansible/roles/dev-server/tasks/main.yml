@@ -4,7 +4,7 @@
     name:
       - build-essential
       - git
-      - neovim
+      - keychain
       - tig
       - tmux
       - htop
@@ -37,6 +37,13 @@
 
 - name: install packer
   shell: git clone --depth 1 https://github.com/wbthomason/packer.nvim ~/.local/share/nvim/site/pack/packer/start/packer.nvim
+
+- name: get latest neovim
+  shell: wget nvim-linux64.deb
+
+- name: install latest neovim
+  become: true
+  shell: apt install ./nvim-linux64.deb
 
 - name: apply chezmoi dotfiles
   shell:
