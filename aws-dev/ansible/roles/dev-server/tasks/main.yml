@@ -14,6 +14,8 @@
       - jq
       - fzf
       - zsh
+      - libssl-dev
+      - zlib1g-dev
 
 - name: increase number of fs inotify watches
   become: true
