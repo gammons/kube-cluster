@@ -1,0 +1,6 @@
+- name: Set up development server packages
+  hosts: dev-server
+  remote_user: ubuntu
+  roles:
+    - tailscale
+    - dev-server

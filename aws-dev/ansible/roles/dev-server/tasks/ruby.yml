@@ -1,0 +1,12 @@
+- name: install asdf
+  shell: git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.10.0
+
+- name: install asdf ruby plugin
+  shell:
+    cmd: asdf plugin add ruby https://github.com/asdf-vm/asdf-ruby.git
+    executable: /usr/bin/zsh
+
+- name: install ruby
+  shell:
+    cmd: asdf install ruby latest
+    executable: /usr/bin/zsh

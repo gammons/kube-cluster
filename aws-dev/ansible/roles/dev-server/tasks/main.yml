@@ -1,0 +1,44 @@
+- name: install dev machine packages
+  become: true
+  apt:
+    name:
+      - build-essential
+      - git
+      - neovim
+      - tig
+      - tmux
+      - htop
+      - silversearcher-ag
+      - fd-find
+      - exa
+      - jq
+      - fzf
+      - zsh
+
+- name: increase number of fs inotify watches
+  become: true
+  shell: echo fs.inotify.max_user_watches=524288 | tee -a /etc/sysctl.conf
+
+- name: add fzf.zsh
+  shell: cp /usr/share/doc/fzf/examples/key-bindings.zsh ~/.fzf.zsh
+
+- name: change shell
+  become: true
+  shell: chsh -s /bin/zsh ubuntu
+
+- name: install chezmoi
+  shell: sh -c "$(curl -fsLS chezmoi.io/get)" -- init --apply gammons
+
+- name: install starship
+  become: true
+  shell: snap install starship
+
+- name: install packer
+  shell: git clone --depth 1 https://github.com/wbthomason/packer.nvim ~/.local/share/nvim/site/pack/packer/start/packer.nvim
+
+- name: apply chezmoi dotfiles
+  shell:
+    cmd: chezmoi update
+    executable: /usr/bin/zsh
+
+- include: ruby.yml
