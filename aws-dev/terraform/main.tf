@@ -15,11 +15,16 @@ provider "aws" {
 }
 
 resource "aws_instance" "dev_server" {
-  ami           = "ami-0aeb7c931a5a61206"
+  ami           = "ami-09d58b77d2efa5a89"
   instance_type = "c6a.2xlarge"
   availability_zone = "us-east-2a"
   security_groups = ["default"]
   key_name = "id_rsa"
+
+  root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
+  }
 
   tags = {
     Name = "dev server"
