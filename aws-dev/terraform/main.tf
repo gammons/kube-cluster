@@ -15,7 +15,7 @@ provider "aws" {
 }
 
 resource "aws_instance" "dev_server" {
-  ami           = "ami-09d58b77d2efa5a89"
+  ami           = "ami-09b3dcc356a077836"
   instance_type = "c6a.2xlarge"
   availability_zone = "us-east-2a"
   security_groups = ["default"]
