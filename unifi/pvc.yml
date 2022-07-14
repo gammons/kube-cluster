@@ -1,0 +1,15 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-unifi
+  namespace: unifi
+  annotations:
+    nfs.io/storage-path: "unifi"
+spec:
+  storageClassName: local-nfs-client
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 8Gi
