@@ -1,0 +1,7 @@
+# used to create a local nfs client (nfs-subdir-local-provisioner) for faster NFS compared to the weird contraption I wired up
+# that goes to AWS via tailscale.
+# this is mainly for unifi, since unifi mongodb really didn't like the latency with the AWS setup.
+helm install nfs-subdir-local-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
+    --set nfs.server=192.168.235.220 \
+    --set nfs.path=/nfs \
+    --set storageClass.name=local-nfs-client
