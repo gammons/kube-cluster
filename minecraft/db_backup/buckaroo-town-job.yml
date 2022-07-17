@@ -1,0 +1,40 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: minecraft-buckaroo-town-backup
+  namespace: minecraft-new
+spec:
+  schedule: "0 20 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          volumes:
+          - name: minecraft-volume
+            persistentVolumeClaim:
+              claimName: minecraft-claim
+          containers:
+          - name: minecraft-world-backup
+            image: gammons1/minecraft-world-backup:3
+            volumeMounts:
+            - name: minecraft-volume
+              mountPath: "/data"
+            imagePullPolicy: Always
+            env:
+              - name: AWS_DEFAULT_REGION
+                value: "us-east-2"
+              - name: AWS_ACCESS_KEY_ID
+                valueFrom:
+                  secretKeyRef:
+                    name: s3-creds
+                    key: aws-access-key-id
+              - name: AWS_SECRET_ACCESS_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: s3-creds
+                    key: aws-secret-access-key
+            command:
+            - "sh"
+            - "backup.sh"
+            - "buckaroo-town"

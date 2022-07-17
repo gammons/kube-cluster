@@ -1,7 +1,7 @@
-apiVersion: batch/v1beta1
+apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: minecraft-world-backup
+  name: minecraft-baci-smp-world-backup
   namespace: minecraft-new
 spec:
   schedule: "0 20 * * *"
@@ -16,7 +16,7 @@ spec:
               claimName: minecraft-claim
           containers:
           - name: minecraft-world-backup
-            image: gammons1/minecraft-world-backup:2
+            image: gammons1/minecraft-world-backup:3
             volumeMounts:
             - name: minecraft-volume
               mountPath: "/data"
@@ -37,3 +37,4 @@ spec:
             command:
             - "sh"
             - "backup.sh"
+            - "baci-smp"
