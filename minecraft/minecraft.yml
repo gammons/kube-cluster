@@ -40,7 +40,7 @@ spec:
         - name: EULA
           value: "TRUE"
         - name: MEMORY
-          value: "3G"
+          value: "8G"
       volumes:
       - name: minecraft-volume
         persistentVolumeClaim:
