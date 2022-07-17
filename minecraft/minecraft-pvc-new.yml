@@ -1,9 +1,9 @@
-# the original buckaroo town
+# a fresh new server that alex wanted
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: minecraft-claim
+  name: minecraft-claim-new
   namespace: minecraft-new
   annotations:
     nfs.io/storage-path: "minecraft"
