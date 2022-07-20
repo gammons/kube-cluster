@@ -8,7 +8,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: minecraft-world-backup
-    image: gammons1/minecraft-world-backup:2
+    image: gammons1/minecraft-world-backup:4
     volumeMounts:
     - name: minecraft-volume
       mountPath: "/data"

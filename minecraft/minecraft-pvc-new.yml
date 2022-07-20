@@ -3,12 +3,12 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: minecraft-claim-new
+  name: minecraft-claim-new-local
   namespace: minecraft-new
   annotations:
     nfs.io/storage-path: "minecraft"
 spec:
-  storageClassName: nfs-client
+  storageClassName: local-nfs-client
   accessModes:
   - ReadWriteMany
   resources:

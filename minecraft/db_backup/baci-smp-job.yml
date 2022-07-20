@@ -13,10 +13,10 @@ spec:
           volumes:
           - name: minecraft-volume
             persistentVolumeClaim:
-              claimName: minecraft-claim
+              claimName: minecraft-claim-new-local
           containers:
           - name: minecraft-world-backup
-            image: gammons1/minecraft-world-backup:3
+            image: gammons1/minecraft-world-backup:4
             volumeMounts:
             - name: minecraft-volume
               mountPath: "/data"
