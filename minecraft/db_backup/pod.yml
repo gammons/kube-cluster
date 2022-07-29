@@ -27,4 +27,4 @@ spec:
   volumes:
   - name: minecraft-volume
     persistentVolumeClaim:
-      claimName: minecraft-claim
+      claimName: minecraft-claim-new-local
