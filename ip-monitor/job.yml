@@ -28,4 +28,5 @@ spec:
                     name: s3-creds
                     key: aws-secret-access-key
             command:
-            - './ip-monitor.rb'
+            - 'ruby'
+            - 'ip_monitor.rb'
