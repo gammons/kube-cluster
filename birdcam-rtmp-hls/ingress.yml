@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: birdcam-ingress
+  namespace: birdcam
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+
+spec:
+  rules:
+  - host: birdcam-cam.grant.dev
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: birdcam-service
+            port:
+              number: 8080
+  tls:
+  - hosts:
+    - birdcam-cam.grant.dev
+    secretName: birdcam-cam-cert

@@ -1,0 +1,44 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: birdcam-service
+  namespace: birdcam
+spec:
+  loadBalancerIP: 192.168.150.12
+  ports:
+  - port: 1935
+    targetPort: 1935
+    protocol: TCP
+    name: port-1
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: port-2
+  selector:
+    app: birdcam
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: birdcam-deploy
+  namespace: birdcam
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: birdcam
+  template:
+    metadata:
+      labels:
+        app: birdcam
+    spec:
+      containers:
+      - name: birdcam
+        image: alqutami/rtmp-hls
+        ports:
+        - containerPort: 1935
+          name: port-1
+        - containerPort: 8080
+          name: port-2
