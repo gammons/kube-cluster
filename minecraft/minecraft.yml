@@ -5,7 +5,7 @@ metadata:
   name: minecraft-service
   namespace: minecraft-new
 spec:
-  loadBalancerIP: 192.168.150.11
+  loadBalancerIP: 192.168.1.70
   ports:
   - port: 25565
     targetPort: 25565

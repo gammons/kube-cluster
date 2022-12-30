@@ -71,7 +71,7 @@ spec:
   selector:
     name: unifi-controller
   type: LoadBalancer
-  loadBalancerIP: 192.168.150.1
+  loadBalancerIP: 192.168.1.80
 ---
 kind: Service
 apiVersion: v1
@@ -89,5 +89,5 @@ spec:
   selector:
     name: unifi-controller
   type: LoadBalancer
-  loadBalancerIP: 192.168.150.1
+  loadBalancerIP: 192.168.1.80
 

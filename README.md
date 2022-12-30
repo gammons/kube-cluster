@@ -1,19 +1,24 @@
 # Kube config for my homelab
 
+### Dashboard
+
+1. Follow instructions: https://kubernetes.io/docs/tasks/access-application-cluster/web-ui-dashboard/
+
 ### MetalLB
 
-First install metalLB: `kubectl apply -f https://raw.githubusercontent.com/google/metallb/v0.8.3/manifests/metallb.yaml`
-
-Then apply the configuration in `metallb-config.yml`
+1. follow instructions: https://metallb.universe.tf/installation/
+2. Then apply the configuration in `metallb-config.yml`
 
 ### NFS storage provisioner
 
-`helm install stable/nfs-client-provisioner --set nfs.server=192.168.140.220 --set nfs.path=/nfs -g`
+- run `local-nfs-client`
 
-### ELK
+### minecraft server
 
-Follow the README in the `elk/` directory
+### Unifi
 
-### Prometheus
+1. run ns.yml
+1. run pvc.yml
+1. run deployment.yml
 
-`helm install prometheus prometheus-community/prometheus -n prometheus`
+
