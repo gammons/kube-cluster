@@ -1,0 +1,24 @@
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: 'filesystem'
+  rulerConfig:
+    storage:
+      type: local
+
+read:
+  persistence:
+    storageClass: local-nfs-client
+    storageClassname: local-nfs-client
+
+singleBinary:
+  persistence:
+    storageClass: local-nfs-client
+    storageClassname: local-nfs-client
+
+write:
+  persistence:
+    storageClass: local-nfs-client
+    storageClassname: local-nfs-client
