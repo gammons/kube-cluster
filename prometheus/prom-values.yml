@@ -970,18 +970,12 @@ serverFiles:
       # * `prometheus.io/path`: If the metrics path is not `/metrics` override this.
       # * `prometheus.io/port`: Scrape the pod on the indicated port instead of the default of `9102`.
 
-      - job_name: cactus-node-exporter
+      - job_name: fleet-health
         static_configs:
           - targets:
             - 192.168.1.50:9100
-      - job_name: ivy-node-exporter
-        static_configs:
-          - targets:
-            - 192.168.1.52:9100
-      - job_name: fern-node-exporter
-        static_configs:
-          - targets:
             - 192.168.1.51:9100
+            - 192.168.1.52:9100
 
       - job_name: 'kubernetes-pods-slow'
         honor_labels: true
