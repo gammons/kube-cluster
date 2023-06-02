@@ -4,11 +4,10 @@ metadata:
   name: minecraft-world-backup
   namespace: minecraft-new
 spec:
-spec:
   restartPolicy: Never
   containers:
   - name: minecraft-world-backup
-    image: gammons1/minecraft-world-backup:4
+    image: gammons1/minecraft-world-backup:7
     volumeMounts:
     - name: minecraft-volume
       mountPath: "/data"
