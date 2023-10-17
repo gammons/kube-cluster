@@ -8,7 +8,7 @@ metadata:
   annotations:
     nfs.io/storage-path: "minecraft"
 spec:
-  storageClassName: local-nfs-client
+  storageClassName: longhorn
   accessModes:
   - ReadWriteMany
   resources:
