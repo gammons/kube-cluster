@@ -2,6 +2,7 @@
 
 ```
 helm install prometheus prometheus-community/kube-prometheus-stack -n observability -f prom-values.yml
+helm install -n observability -f prom-values.yml prometheus prometheus-community/prometheus
 ```
 
 I _think_ I need a tls ingress for prometheus, so I can export to it
