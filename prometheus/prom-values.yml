@@ -748,6 +748,11 @@ serverFiles:
           - targets: ['100.125.188.20:9100']
             labels:
               instance: 'truelist-node-1'
+
+      - job_name: truelist-app-metrics
+        static_configs:
+          - targets: ['100.125.188.20:9394']
+
       - job_name: prometheus
         static_configs:
           - targets:
