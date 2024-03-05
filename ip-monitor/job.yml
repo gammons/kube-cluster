@@ -5,6 +5,9 @@ metadata:
   namespace: ip-monitor
 spec:
   schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
   jobTemplate:
     spec:
       template:
