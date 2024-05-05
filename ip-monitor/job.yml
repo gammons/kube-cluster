@@ -4,7 +4,7 @@ metadata:
   name: ip-monitor-job
   namespace: ip-monitor
 spec:
-  schedule: "* * * * *"
+  schedule: "*/5 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 1
