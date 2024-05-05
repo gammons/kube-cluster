@@ -184,7 +184,7 @@ persistence:
   # operation. Leaving it empty will delete PVCs after the chart deleted
   # (this does not apply for PVCs that are created for internal database
   # and redis components, i.e. they are never deleted automatically)
-  resourcePolicy: "keep"
+  resourcePolicy: ""
   persistentVolumeClaim:
     registry:
       # Use the existing PVC which must be created manually before bound,
