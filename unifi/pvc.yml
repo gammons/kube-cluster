@@ -7,9 +7,9 @@ metadata:
   annotations:
     nfs.io/storage-path: "unifi"
 spec:
-  storageClassName: local-nfs-client
+  storageClassName: longhorn
   accessModes:
-    - ReadWriteMany
+    - ReadWriteOnce
   resources:
     requests:
       storage: 8Gi
