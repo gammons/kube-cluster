@@ -8,17 +8,23 @@ loki:
     storage:
       type: local
 
+gateway:
+  service:
+    type: NodePort
+    nodePort: 31000
+
 read:
   persistence:
-    storageClass: local-nfs-client
-    storageClassname: local-nfs-client
+    storageClass: longhorn
+    storageClassname: longhorn
 
 singleBinary:
+  replicas: 1
   persistence:
-    storageClass: local-nfs-client
-    storageClassname: local-nfs-client
+    storageClass: longhorn
+    storageClassname: longhorn
 
 write:
   persistence:
-    storageClass: local-nfs-client
-    storageClassname: local-nfs-client
+    storageClass: longhorn
+    storageClassname: longhorn
