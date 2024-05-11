@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: home-assistant-pod
+  namespace: home-assistant
+spec:
+  restartPolicy: Never
+  containers:
+  - name: home-assistant-pod
+    command: ['sh','-c','sleep infinity']
+    image: busybox:latest
+    volumeMounts:
+    - name: home-assistant-vol
+      mountPath: "/data"
+  volumes:
+  - name: home-assistant-vol
+    persistentVolumeClaim:
+      claimName: home-assistant-home-assistant-0
