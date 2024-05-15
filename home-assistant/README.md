@@ -2,9 +2,11 @@
 
 
 Create via:
-`helm install --create-namespace -n home-assistant -f values.yml home-assistant alekc-charts/home-assistant`
+```
+helm repo add pajikos http://pajikos.github.io/home-assistant-helm-chart/
+helm repo update
+helm install home-assistant pajikos/home-assistant --values values.yml -n home-assistant
+```
 
 Delete via
 `helm uninstall -n home-assistant -f values.yml`
-
-Using 192.168.1.72 ip

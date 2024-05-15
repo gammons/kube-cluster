@@ -2,6 +2,9 @@ service:
   type: NodePort
   port: 8124
 
+podSecurityContext:
+  privileged: true
+
 securityContext:
   privileged: true
 
