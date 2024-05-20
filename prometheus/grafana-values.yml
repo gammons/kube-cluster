@@ -206,13 +206,14 @@ gossipPortName: gossip
 ##
 service:
   enabled: true
-  type: NodePort
+  type: LoadBalancer
   ports:
-    - port: 5000
+    - port: 80
       targetPort: 3000
     # targetPort: 4181 To be used with a proxy extraContainer
   ## Service annotations. Can be templated.
-  annotations: {}
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: 192.168.20.1
   labels: {}
   portName: service
   # Adds the appProtocol field to the service. This allows to work with istio protocol selection. Ex: "http" or "tcp"
@@ -416,7 +417,7 @@ adminUser: admin
 # Use an existing secret for the admin user.
 admin:
   ## Name of the secret. Can be templated.
-  existingSecret: ""
+  existingSecret: admin-creds
   userKey: admin-user
   passwordKey: admin-password
 
