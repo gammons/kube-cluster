@@ -1,0 +1,17 @@
+service:
+  type: LoadBalancer
+  annotations:
+    metallb.universe.tf/loadBalancerIps: 192.168.20.5
+
+ingress:
+  enabled: true
+  hosts:
+    - metabase.grant.dev
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    kubernetes.io/ingress.class: traefik
+
+  tls:
+    - hosts:
+        - metabase.grant.dev
+      secretName: metabase-grant-dev-tls
