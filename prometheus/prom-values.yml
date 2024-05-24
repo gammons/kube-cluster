@@ -754,7 +754,7 @@ serverFiles:
 
       - job_name: truelist-app-metrics
         static_configs:
-          - targets: ['100.79.220.13:9394']
+          - targets: ['100.113.148.14:9394']
 
       - job_name: prometheus
         static_configs:
