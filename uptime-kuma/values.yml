@@ -1,0 +1,22 @@
+service:
+  type: LoadBalancer
+  annotations:
+    metallb.universe.tf/loadBalancerIps: 192.168.20.6
+
+ingress:
+  enabled: true
+  hosts:
+    - host: uptime.grant.dev
+      paths:
+        - path: /
+          pathType: Prefix
+
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    kubernetes.io/ingress.class: traefik
+
+  tls:
+    - hosts:
+        - uptime.grant.dev
+      secretName: uptime-grant-dev-tls
+
