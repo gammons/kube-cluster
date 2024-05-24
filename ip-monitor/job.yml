@@ -15,7 +15,7 @@ spec:
           restartPolicy: Never
           containers:
           - name: ip-monitor
-            image: gammons1/ip-monitor:1
+            image: gammons1/ip_monitor:latest
             imagePullPolicy: Always
             env:
               - name: AWS_DEFAULT_REGION
