@@ -1,0 +1,35 @@
+frontend:
+  ingress:
+    enabled: true
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      - host: signoz.grant.dev
+        paths:
+          - path: /
+            pathType: Prefix
+            port: 3301
+
+    tls:
+      - secretName: signoz-grant-dev-tls
+        hosts:
+          - signoz.grant.dev
+
+otelCollector:
+  ingress:
+    enabled: true
+    annotations:
+      kubernetes.io/ingress.class: traefik
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    hosts:
+      - host: otel-collector.grant.dev
+        paths:
+          - path: /
+            pathType: ImplementationSpecific
+            port: 4318
+
+    tls:
+      - secretName: signoz-grant-dev-tls
+        hosts:
+          - signoz.grant.dev
