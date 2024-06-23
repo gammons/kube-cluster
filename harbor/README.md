@@ -1,3 +1,14 @@
+# Grant notes
+
+Installed via helm.  If you're re-installing the whole thing, then create the PVCs first (kc apply -f pvc.yml).  The values.yml helm chart is looking for existing PVCs!
+
+Then install the chart normally via helm:
+
+```
+helm install -n harbor -f values.yaml harbor .
+```
+
+
 # Helm Chart for Harbor
 
 **Notes:** The master branch is in heavy development, please use the other stable versions instead. A highly available solution for Harbor based on chart can be found [here](docs/High%20Availability.md). And refer to the [guide](docs/Upgrade.md) to upgrade the existing deployment.
