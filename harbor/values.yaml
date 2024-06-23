@@ -189,7 +189,7 @@ persistence:
     registry:
       # Use the existing PVC which must be created manually before bound,
       # and specify the "subPath" if the PVC is shared with other components
-      existingClaim: ""
+      existingClaim: "harbor-registry"
       # Specify the "storageClass" used to provision the volume. Or the default
       # StorageClass will be used (the default).
       # Set it to "-" to disable dynamic provisioning
@@ -200,7 +200,7 @@ persistence:
       annotations: {}
     jobservice:
       jobLog:
-        existingClaim: ""
+        existingClaim: "harbor-jobservice"
         storageClass: "longhorn"
         subPath: ""
         accessMode: ReadWriteOnce
@@ -209,7 +209,7 @@ persistence:
     # If external database is used, the following settings for database will
     # be ignored
     database:
-      existingClaim: ""
+      existingClaim: "database-data-harbor-database-0"
       storageClass: "longhorn"
       subPath: ""
       accessMode: ReadWriteOnce
@@ -225,7 +225,7 @@ persistence:
       size: 1Gi
       annotations: {}
     trivy:
-      existingClaim: ""
+      existingClaim: "data-harbor-trivy-0"
       storageClass: "longhorn"
       subPath: ""
       accessMode: ReadWriteOnce
