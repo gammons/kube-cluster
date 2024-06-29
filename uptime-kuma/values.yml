@@ -20,3 +20,5 @@ ingress:
         - uptime.grant.dev
       secretName: uptime-grant-dev-tls
 
+volume:
+  existingClaim: "uptime-kuma-pvc"
