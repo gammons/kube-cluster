@@ -10,6 +10,10 @@ helm upgrade -n observability -f prom-values.yml prometheus prometheus-community
 
 Remember - prometheus scrapes external service!  See scrape_configs in prom-values.yml
 
+## Updating prom config
+
+helm upgrade -n observability -f prom-values.yml prometheus prometheus-community/prometheus
+
 ## Grafana install
 
 
