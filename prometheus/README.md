@@ -7,10 +7,8 @@ helm install -n observability -f prom-values.yml prometheus prometheus-community
 **updating the prom config:**
 helm upgrade -n observability -f prom-values.yml prometheus prometheus-community/prometheus
 
-I _think_ I need a tls ingress for prometheus, so I can export to it
 
-
-100.73.253.14
+Remember - prometheus scrapes external service!  See scrape_configs in prom-values.yml
 
 ## Grafana install
 
