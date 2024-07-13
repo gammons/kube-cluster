@@ -760,6 +760,10 @@ serverFiles:
         static_configs:
           - targets: ['prometheus-exporter.truelist-staging:9394']
 
+      - job_name: prometheus-exporter-truelist-production
+        static_configs:
+          - targets: ['truelist-prometheus-exporter:9394']
+
       - job_name: prometheus
         static_configs:
           - targets:
