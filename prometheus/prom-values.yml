@@ -760,9 +760,10 @@ serverFiles:
         static_configs:
           - targets: ['prometheus-exporter.truelist-staging:9394']
 
+      # The address for this is from tailscale.
       - job_name: prometheus-exporter-truelist-production
         static_configs:
-          - targets: ['truelist-prometheus-exporter:9394']
+          - targets: ['truelist-prod-prometheus-exporter:9394']
 
       - job_name: prometheus
         static_configs:

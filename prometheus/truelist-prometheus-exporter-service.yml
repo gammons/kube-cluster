@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: observability
+  annotations:
+    tailscale.com/tailnet-ip: 100.86.30.7
+  name: truelist-prod-prometheus-exporter
+spec:
+  externalName: placeholder   # any value - will be overwritten by operator
+  type: ExternalName

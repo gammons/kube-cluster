@@ -55,3 +55,7 @@ Set `http://prometheus-server` as the url
 
 - ensure the correct ips in prom-values.yml for the truelist node health check
 - communication is through tailscale.  no need to expose a port from AWS
+
+## truelist exporter
+
+- make sure you run the `truelist-prometheus-exporter-service.yml` so that a service gets created from the tailnet node that exports prom metrics for truelist prod
