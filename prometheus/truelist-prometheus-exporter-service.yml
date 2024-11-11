@@ -1,10 +1,23 @@
+# Exposes the prometheus exporter service (running on the truelist production EKS cluster nodes) to the tailscale network
+# so that the local k8s cluster (running prometheus) can scrape the metrics from the exporter service.
 apiVersion: v1
 kind: Service
 metadata:
   namespace: observability
   annotations:
-    tailscale.com/tailnet-ip: 100.86.30.7
-  name: truelist-prod-prometheus-exporter
+    tailscale.com/tailnet-ip: 100.122.62.93
+  name: truelist-prod-prometheus-exporter-node-1
+spec:
+  externalName: placeholder   # any value - will be overwritten by operator
+  type: ExternalName
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: observability
+  annotations:
+    tailscale.com/tailnet-ip: 100.110.117.53
+  name: truelist-prod-prometheus-exporter-node-2
 spec:
   externalName: placeholder   # any value - will be overwritten by operator
   type: ExternalName

@@ -743,14 +743,14 @@ serverFiles:
       - /etc/config/alerts
 
     scrape_configs:
-      #- job_name: truelist-host-health
-      #  static_configs:
-      #    - targets: ['100.125.188.20:9100']
-      #      labels:
-      #        instance: 'truelist-node-1'
-      #    - targets: ['100.73.253.14:9100']
-      #      labels:
-      #        instance: 'truelist-sidekiq'
+      - job_name: truelist-host-health
+        static_configs:
+          - targets: ['ts-truelist-prod-prometheus-exporter-node-1-vfsz2.tailscale.svc.cluster.local:9100']
+            labels:
+              instance: 'truelist-node-1'
+          - targets: ['ts-truelist-prod-prometheus-exporter-node-2-mp8fl.tailscale.svc.cluster.local:9100']
+            labels:
+              instance: 'truelist-node-2'
 
       - job_name: truelist-app-metrics
         static_configs:
