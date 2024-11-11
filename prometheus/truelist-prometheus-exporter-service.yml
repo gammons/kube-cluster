@@ -5,7 +5,7 @@ kind: Service
 metadata:
   namespace: observability
   annotations:
-    tailscale.com/tailnet-ip: 100.122.62.93
+    tailscale.com/tailnet-ip: 100.100.127.58
   name: truelist-prod-prometheus-exporter-node-1
 spec:
   externalName: placeholder   # any value - will be overwritten by operator
@@ -16,7 +16,7 @@ kind: Service
 metadata:
   namespace: observability
   annotations:
-    tailscale.com/tailnet-ip: 100.110.117.53
+    tailscale.com/tailnet-ip: 100.70.250.38
   name: truelist-prod-prometheus-exporter-node-2
 spec:
   externalName: placeholder   # any value - will be overwritten by operator
