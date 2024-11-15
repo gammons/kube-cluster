@@ -1,0 +1,11 @@
+architecture: replication
+primary:
+  persistence:
+    annotations:
+      volume.beta.kubernetes.io/storage-class: "longhorn"
+    storageClass: "longhorn"
+secondary:
+  persistence:
+    annotations:
+      volume.beta.kubernetes.io/storage-class: "longhorn"
+    storageClass: "longhorn"

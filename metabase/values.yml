@@ -1,8 +1,3 @@
-service:
-  type: LoadBalancer
-  annotations:
-    metallb.universe.tf/loadBalancerIps: 192.168.20.5
-
 ingress:
   enabled: true
   hosts:
@@ -15,3 +10,12 @@ ingress:
     - hosts:
         - metabase.grant.dev
       secretName: metabase-grant-dev-tls
+
+database:
+  type: mysql
+  host: mariadb-primary
+  port: 3306
+  dbname: metabase
+  username: root
+  existingSecret: metabase-mariadb
+  existingSecretPasswordKey: password
