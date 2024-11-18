@@ -743,12 +743,14 @@ serverFiles:
       - /etc/config/alerts
 
     scrape_configs:
+      # truelist node health looks at the external services created by the truelist-prometheus-exporter-service.yml
+      # file. it assumes the nodes are on tailscale.
       - job_name: truelist-host-health
         static_configs:
-          - targets: ['ts-truelist-prod-prometheus-exporter-node-1-vfsz2.tailscale.svc.cluster.local:9100']
+          - targets: ['ts-truelist-prod-prometheus-exporter-node-1-qcwb9.tailscale.svc.cluster.local:9100']
             labels:
               instance: 'truelist-node-1'
-          - targets: ['ts-truelist-prod-prometheus-exporter-node-2-mp8fl.tailscale.svc.cluster.local:9100']
+          - targets: ['ts-truelist-prod-prometheus-exporter-node-2-fn2h8.tailscale.svc.cluster.local:9100']
             labels:
               instance: 'truelist-node-2'
 
@@ -764,6 +766,10 @@ serverFiles:
       - job_name: prometheus-exporter-truelist-production
         static_configs:
           - targets: ['truelist-prod-prometheus-exporter:9394']
+
+      - job_name: mysqld-prometheus-exporter-prod-rds
+        static_configs:
+          - targets: ['10.43.237.204:9104']
 
       - job_name: prometheus
         static_configs:
