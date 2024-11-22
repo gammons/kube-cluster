@@ -756,7 +756,7 @@ serverFiles:
 
       - job_name: truelist-app-metrics
         static_configs:
-          - targets: ['100.113.148.14:9394']
+          - targets: ['ts-local-app-prometheus-exporter-hlhbw.tailscale.svc.cluster.local:9394']
 
       - job_name: prometheus-exporter-truelist-staging
         static_configs:
