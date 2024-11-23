@@ -1,0 +1,16 @@
+# exposes the RDS instance to the LOCAL cluster.
+# this is step 2 outlined in "kubernetes and tailscale" doc
+# RDS is already exposed to tailnet via the production k8s cluster (see rds.yml in truelist-k8s/production)
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    tailscale.com/tailnet-fqdn: truelist-prometheus-exporter.rya-scala.ts.net
+  name: local-app-prometheus-exporter
+spec:
+  externalName: local-app-prometheus-exporter
+  type: ExternalName
+  ports:
+    - port: 9394
+      targetPort: 9394
+      protocol: TCP
