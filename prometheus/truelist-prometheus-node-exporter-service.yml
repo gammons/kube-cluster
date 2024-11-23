@@ -21,3 +21,25 @@ metadata:
 spec:
   externalName: placeholder   # any value - will be overwritten by operator
   type: ExternalName
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: observability
+  annotations:
+    tailscale.com/tailnet-ip: 100.127.165.111
+  name: truelist-prod-prometheus-exporter-node-3
+spec:
+  externalName: placeholder   # any value - will be overwritten by operator
+  type: ExternalName
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: observability
+  annotations:
+    tailscale.com/tailnet-ip: 100.118.98.91
+  name: truelist-prod-prometheus-exporter-node-4
+spec:
+  externalName: placeholder   # any value - will be overwritten by operator
+  type: ExternalName

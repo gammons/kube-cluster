@@ -753,6 +753,12 @@ serverFiles:
           - targets: ['ts-truelist-prod-prometheus-exporter-node-2-fn2h8.tailscale.svc.cluster.local:9100']
             labels:
               instance: 'truelist-node-2'
+          - targets: ['ts-truelist-prod-prometheus-exporter-node-3-q2jg8.tailscale.svc.cluster.local:9100']
+            labels:
+              instance: 'truelist-node-3'
+          - targets: ['ts-truelist-prod-prometheus-exporter-node-4-lnqpp.tailscale.svc.cluster.local:9100']
+            labels:
+              instance: 'truelist-node-4'
 
       - job_name: truelist-app-metrics
         static_configs:
