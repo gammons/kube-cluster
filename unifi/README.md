@@ -6,5 +6,4 @@
 
 Double-check the metallb deployment.  by default it uses 192.168.20.1
 
-
-Log in at https://192.168.20.1:8443
+Unifi seems to run on a node port, so go to https://192.168.10.2:8443/
