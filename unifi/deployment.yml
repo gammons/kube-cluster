@@ -45,7 +45,7 @@ metadata:
   name: lb-unifi
   namespace: unifi
   annotations:
-    metallb.universe.tf/loadBalancerIPs: 192.168.10.1
+    metallb.universe.tf/loadBalancerIPs: 192.168.20.10
 spec:
   ports:
     - name: '8080'
