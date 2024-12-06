@@ -764,10 +764,6 @@ serverFiles:
         static_configs:
           - targets: ['ts-local-app-prometheus-exporter-hlhbw.tailscale.svc.cluster.local:9394']
 
-      - job_name: truelist-cloudwatch-metrics
-        static_configs:
-          - targets: ['ts-local-cloudwatch-metrics-ntwdj.tailscale.svc.cluster.local:9106']
-
       - job_name: prometheus-exporter-truelist-staging
         static_configs:
           - targets: ['prometheus-exporter.truelist-staging:9394']
