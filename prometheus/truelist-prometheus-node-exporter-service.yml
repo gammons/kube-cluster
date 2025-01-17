@@ -7,9 +7,15 @@ metadata:
   annotations:
     tailscale.com/tailnet-ip: 100.68.59.122
   name: truelist-prod-prometheus-exporter-node-1
+  labels:
+    monitoring: node-health
 spec:
   externalName: placeholder   # any value - will be overwritten by operator
   type: ExternalName
+  ports:
+  - name: metrics
+    port: 9100
+    targetPort: 9100
 ---
 apiVersion: v1
 kind: Service
@@ -18,9 +24,15 @@ metadata:
   annotations:
     tailscale.com/tailnet-ip: 100.120.218.120
   name: truelist-prod-prometheus-exporter-node-2
+  labels:
+    monitoring: node-health
 spec:
   externalName: placeholder   # any value - will be overwritten by operator
   type: ExternalName
+  ports:
+  - name: metrics
+    port: 9100
+    targetPort: 9100
 ---
 apiVersion: v1
 kind: Service
@@ -29,9 +41,15 @@ metadata:
   annotations:
     tailscale.com/tailnet-ip: 100.127.165.111
   name: truelist-prod-prometheus-exporter-node-3
+  labels:
+    monitoring: node-health
 spec:
   externalName: placeholder   # any value - will be overwritten by operator
   type: ExternalName
+  ports:
+  - name: metrics
+    port: 9100
+    targetPort: 9100
 ---
 apiVersion: v1
 kind: Service
@@ -40,6 +58,12 @@ metadata:
   annotations:
     tailscale.com/tailnet-ip: 100.118.98.91
   name: truelist-prod-prometheus-exporter-node-4
+  labels:
+    monitoring: node-health
 spec:
   externalName: placeholder   # any value - will be overwritten by operator
   type: ExternalName
+  ports:
+  - name: metrics
+    port: 9100
+    targetPort: 9100

@@ -1,0 +1,14 @@
+# exposes redis to the LOCAL cluster.
+# this is step 2 outlined in "kubernetes and tailscale" doc
+# redis is already exposed to tailnet via the production k8s cluster (see redis.yml in truelist-k8s/production)
+
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    tailscale.com/tailnet-fqdn: redis-redis.rya-scala.ts.net
+  name: redis-production
+  namespace: observability
+spec:
+  externalName: redis-prod
+  type: ExternalName

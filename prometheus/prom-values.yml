@@ -773,6 +773,10 @@ serverFiles:
         static_configs:
           - targets: ['truelist-prod-prometheus-exporter:9394']
 
+      - job_name: redis-truelist-production
+        static_configs:
+          - targets: ['redis-production:9121']
+
       - job_name: mysqld-prometheus-exporter-prod-rds
         static_configs:
           - targets: ['10.43.237.204:9104']
