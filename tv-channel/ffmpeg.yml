@@ -58,7 +58,7 @@ metadata:
 data:
   shuffle_playlist.rb: |
     #!/usr/bin/env ruby
-    files = Dir.glob("/mnt/media/*.webm").shuffle
+    files = Dir.glob("/mnt/media/*.mp4").shuffle
     File.open("/mnt/media/playlist.txt", "w") do |file|
       files.each { |f| file.puts "file '#{f}'" }
     end
