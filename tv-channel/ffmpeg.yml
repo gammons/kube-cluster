@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ffmpeg-streamer
+  namespace: tv-channel
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ffmpeg-streamer
+  template:
+    metadata:
+      labels:
+        app: ffmpeg-streamer
+    spec:
+      volumes:
+        - name: media-storage  # ✅ This must match the volumeMounts below
+          persistentVolumeClaim:
+            claimName: media-pvc
+        - name: script-volume  # ✅ This must match the volumeMounts below
+          configMap:
+            name: shuffle-script
+      containers:
+        - name: ffmpeg-streamer
+          image: ruby:3.2  # Using Ruby base, installing FFmpeg
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              apt-get update && apt-get install -y ffmpeg;
+              while true; do
+                ruby /scripts/shuffle_playlist.rb;
+
+                ffmpeg -re -stream_loop -1 -f concat -safe 0 -i playlist.txt \
+                  -vf format=yuv420p \
+                  -c:v libx264 -preset veryfast -b:v 2500k -maxrate 2800k -bufsize 6000k \
+                  -c:a aac -b:a 128k -strict experimental \
+                  -g 50 -keyint_min 50 -sc_threshold 0 \
+                  -f flv rtmp://192.168.10.2:31935/live/stream
+                sleep 1;
+              done;
+          volumeMounts:
+            - mountPath: /mnt/media
+              name: media-storage  # ✅ This must match the 'volumes' entry
+            - mountPath: /scripts
+              name: script-volume  # ✅ This must match the 'volumes' entry
+          resources:
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shuffle-script
+  namespace: tv-channel
+data:
+  shuffle_playlist.rb: |
+    #!/usr/bin/env ruby
+    files = Dir.glob("/mnt/media/*.mp4").shuffle
+    File.open("/mnt/media/playlist.txt", "w") do |file|
+      files.each { |f| file.puts "file '#{f}'" }
+    end

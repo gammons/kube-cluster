@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: yt-dlp
+  namespace: tv-channel
+spec:
+  volumes:
+    - name: media-storage
+      persistentVolumeClaim:
+        claimName: media-pvc
+  containers:
+    - name: yt-dlp
+      image:  jeeaaasustest/youtube-dl:latest
+      command: ["/bin/sh"]
+      args: ["-c", "while true; do sleep infinity; done"]
+      volumeMounts:
+        - mountPath: /mnt/media
+          name: media-storage
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+

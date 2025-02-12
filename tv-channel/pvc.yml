@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media-pvc
+  namespace: tv-channel
+  annotations:
+    longhorn.io/volume-access-mode: "rwx"
+    longhorn.io/volume-share: "enabled"
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 25Gi
+  storageClassName: longhorn
