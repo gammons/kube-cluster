@@ -2,6 +2,7 @@ ingress:
   enabled: true
   hosts:
     - metabase.grant.dev
+    - metabase.local.grant.dev
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
     kubernetes.io/ingress.class: traefik
@@ -9,6 +10,7 @@ ingress:
   tls:
     - hosts:
         - metabase.grant.dev
+        - metabase.local.grant.dev
       secretName: metabase-grant-dev-tls
 
 database:

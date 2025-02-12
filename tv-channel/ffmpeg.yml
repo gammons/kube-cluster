@@ -30,12 +30,14 @@ spec:
               while true; do
                 ruby /scripts/shuffle_playlist.rb;
 
-                ffmpeg -re -stream_loop -1 -f concat -safe 0 -i playlist.txt \
-                  -vf format=yuv420p \
+                ffmpeg -re -stream_loop -1 -f concat -safe 0 -i /mnt/media/playlist.txt \
                   -c:v libx264 -preset veryfast -b:v 2500k -maxrate 2800k -bufsize 6000k \
+                  -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -color_range tv \
                   -c:a aac -b:a 128k -strict experimental \
+                  -vsync cfr -copyts -start_at_zero \
                   -g 50 -keyint_min 50 -sc_threshold 0 \
                   -f flv rtmp://192.168.10.2:31935/live/stream
+
                 sleep 1;
               done;
           volumeMounts:
@@ -56,7 +58,7 @@ metadata:
 data:
   shuffle_playlist.rb: |
     #!/usr/bin/env ruby
-    files = Dir.glob("/mnt/media/*.mp4").shuffle
+    files = Dir.glob("/mnt/media/*.webm").shuffle
     File.open("/mnt/media/playlist.txt", "w") do |file|
       files.each { |f| file.puts "file '#{f}'" }
     end

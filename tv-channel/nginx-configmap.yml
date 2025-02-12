@@ -25,7 +25,7 @@ data:
                 hls_sync 100ms;
                 hls_fragment_naming system;
                 hls_nested on;
-                hls_cleanup off;
+                hls_cleanup on;
                 hls_variant _low BANDWIDTH=800000;
                 hls_variant _mid BANDWIDTH=1400000;
                 hls_variant _high BANDWIDTH=2500000;
