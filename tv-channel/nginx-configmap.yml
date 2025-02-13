@@ -15,22 +15,18 @@ data:
             chunk_size 4096;
 
             application live {
-                live on;
-                hls on;
-                hls_path /mnt/hls;
-                hls_fragment 6s;
-                hls_playlist_length 30s;
-                hls_type live;
-                hls_continuous on;
-                hls_sync 100ms;
-                hls_fragment_naming system;
-                hls_nested on;
-                hls_cleanup on;
-                hls_variant _low BANDWIDTH=800000;
-                hls_variant _mid BANDWIDTH=1400000;
-                hls_variant _high BANDWIDTH=2500000;
-                allow publish all;
-                allow play all;
+              live on;
+              hls on;
+              hls_path /mnt/hls;
+              hls_fragment 5s;
+              hls_playlist_length 30s;
+              hls_type live;
+              hls_continuous on;
+              hls_sync 500ms;
+              hls_max_fragment 6s;  # **NEW: Pr
+
+              allow publish all;
+              allow play all;
             }
         }
     }

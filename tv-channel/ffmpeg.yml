@@ -30,15 +30,14 @@ spec:
               while true; do
                 ruby /scripts/shuffle_playlist.rb;
 
-                ffmpeg -re -stream_loop -1 -f concat -safe 0 -i /mnt/media/playlist.txt \
-                  -c:v libx264 -preset veryfast -b:v 2500k -maxrate 2800k -bufsize 6000k \
-                  -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -color_range tv \
-                  -c:a aac -b:a 128k -strict experimental \
-                  -vsync cfr -copyts -start_at_zero \
-                  -g 50 -keyint_min 50 -sc_threshold 0 \
+                echo "Starting stream...";
+
+                ffmpeg -re -f concat -safe 0 -i /mnt/media/playlist.txt \
+                  -c:v libx264 -preset veryfast -b:v 2500k \
+                  -c:a aac -b:a 128k \
                   -f flv rtmp://192.168.10.2:31935/live/stream
 
-                sleep 1;
+                sleep 0.5;
               done;
           volumeMounts:
             - mountPath: /mnt/media
@@ -47,8 +46,8 @@ spec:
               name: script-volume  # ✅ This must match the 'volumes' entry
           resources:
             limits:
-              cpu: "1000m"
-              memory: "512Mi"
+              cpu: "4"
+              memory: "2Gi"
 ---
 apiVersion: v1
 kind: ConfigMap
