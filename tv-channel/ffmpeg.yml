@@ -14,40 +14,41 @@ spec:
         app: ffmpeg-streamer
     spec:
       volumes:
-        - name: media-storage  # ✅ This must match the volumeMounts below
+        - name: media-storage
           persistentVolumeClaim:
             claimName: media-pvc
-        - name: script-volume  # ✅ This must match the volumeMounts below
+        - name: script-volume
           configMap:
             name: shuffle-script
       containers:
         - name: ffmpeg-streamer
-          image: ruby:3.2  # Using Ruby base, installing FFmpeg
+          image: ruby:3.2
           command: ["/bin/sh", "-c"]
           args:
             - |
               apt-get update && apt-get install -y ffmpeg;
+
               while true; do
-                ruby /scripts/shuffle_playlist.rb;
+                ruby /scripts/select_one_file.rb;
 
-                echo "Starting stream...";
+                FILE=$(cat /mnt/media/current_file.txt)
+                echo "Streaming file: $FILE"
 
-                ffmpeg -re -f concat -safe 0 -i /mnt/media/playlist.txt \
-                  -c:v libx264 -preset veryfast -b:v 2500k \
-                  -c:a aac -b:a 128k \
+                ffmpeg -re -fflags +genpts -i "$FILE" \
+                  -c:v libx264 -preset veryfast -b:v 2500k -maxrate 2500k -bufsize 5000k \
+                  -c:a aac -b:a 128k -ar 48000 \
                   -f flv rtmp://192.168.10.2:31935/live/stream
-
-                sleep 0.5;
               done;
           volumeMounts:
             - mountPath: /mnt/media
-              name: media-storage  # ✅ This must match the 'volumes' entry
+              name: media-storage
             - mountPath: /scripts
-              name: script-volume  # ✅ This must match the 'volumes' entry
+              name: script-volume
           resources:
             limits:
               cpu: "4"
               memory: "2Gi"
+
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -55,9 +56,26 @@ metadata:
   name: shuffle-script
   namespace: tv-channel
 data:
-  shuffle_playlist.rb: |
+  select_one_file.rb: |
     #!/usr/bin/env ruby
-    files = Dir.glob("/mnt/media/**/*.{mkv,mp4,webm}")
-    File.open("/mnt/media/playlist.txt", "w") do |file|
-      files.each { |f| file.puts "file '#{f}'" }
+    files = Dir.glob("/mnt/media/**/*.{mkv,mp4,webm}").shuffle
+    File.open("/mnt/media/current_file.txt", "w") do |file|
+      file.puts files.first
     end
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ffmpeg-rtmp
+  namespace: tv-channel
+spec:
+  type: ClusterIP
+  ports:
+    - name: rtmp
+      port: 1935
+      targetPort: 31935
+      protocol: TCP
+  selector:
+    app: ffmpeg-streamer
+
