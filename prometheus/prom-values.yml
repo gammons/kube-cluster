@@ -747,21 +747,14 @@ serverFiles:
       # file. it assumes the nodes are on tailscale.
       - job_name: truelist-host-health
         static_configs:
-          - targets: ['ts-truelist-prod-prometheus-exporter-node-1-qcwb9.tailscale.svc.cluster.local:9100']
+          - targets: ['ts-truelist-prometheus-exporter-dtz5r.tailscale.svc.cluster.local:9100']
             labels:
               instance: 'truelist-node-1'
-          - targets: ['ts-truelist-prod-prometheus-exporter-node-2-fn2h8.tailscale.svc.cluster.local:9100']
+      - job_name: truelist-k8s-metrics
+        static_configs:
+          - targets: ['ts-truelist-kube-state-metrics-exporter-hhq5w.tailscale.svc.cluster.local:8080']
             labels:
-              instance: 'truelist-node-2'
-          - targets: ['ts-truelist-prod-prometheus-exporter-node-3-q2jg8.tailscale.svc.cluster.local:9100']
-            labels:
-              instance: 'truelist-node-3'
-          - targets: ['ts-truelist-prod-prometheus-exporter-node-4-lnqpp.tailscale.svc.cluster.local:9100']
-            labels:
-              instance: 'truelist-node-4'
-          - targets: ['ts-truelist-prod-prometheus-exporter-node-5-v7lx6.tailscale.svc.cluster.local:9100']
-            labels:
-              instance: 'truelist-node-5'
+              source: 'truelist-production-k8s-metrics'
 
       - job_name: truelist-app-metrics
         static_configs:
