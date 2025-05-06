@@ -1,0 +1,18 @@
+# Exposes the prometheus exporter service (running on the truelist production EKS cluster nodes) to the tailscale network
+# so that the local k8s cluster (running prometheus) can scrape the metrics from the exporter service.
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: observability
+  annotations:
+    tailscale.com/tailnet-fqdn: monitoring-kube-state-metrics.rya-scala.ts.net
+  name: truelist-kube-state-metrics-exporter
+  labels:
+    monitoring: k8s
+spec:
+  externalName: placeholder   # any value - will be overwritten by operator
+  type: ExternalName
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: 8080
