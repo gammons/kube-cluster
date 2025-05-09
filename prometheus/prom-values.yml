@@ -772,6 +772,14 @@ serverFiles:
       - job_name: redis-truelist-production
         static_configs:
           - targets: ['redis-production:9121']
+            labels:
+              instance: 'truelist-production-redis'
+
+      - job_name: redis-cache-truelist-production
+        static_configs:
+          - targets: ['redis-cache-production:9121']
+            labels:
+              instance: 'redis-cache-truelist-production'
 
       - job_name: mysqld-prometheus-exporter-prod-rds
         static_configs:
