@@ -787,10 +787,24 @@ serverFiles:
         static_configs:
           - targets: ['10.43.237.204:9104']
 
+      - job_name: tempo-truelist-production
+        static_configs:
+          - targets: ['truelist-tempo-tailscale.rya-scala.ts.net:3200']
+            labels:
+              instance: 'tempo-truelist-production'
+              source: 'tempo'
+
       - job_name: prometheus
         static_configs:
           - targets:
             - localhost:9090
+
+      # OpenTelemetry Collector metrics
+      - job_name: 'opentelemetry-collector'
+        static_configs:
+          - targets: ['ts-truelist-otel-collector.tailscale.svc.cluster.local:8889']
+            labels:
+              source: 'opentelemetry'
 
       # A scrape configuration for running Prometheus on a Kubernetes cluster.
       # This uses separate scrape configs for cluster components (i.e. API server, node)
