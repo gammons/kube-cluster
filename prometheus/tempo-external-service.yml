@@ -1,0 +1,17 @@
+# Exposes Tempo to the LOCAL cluster via Tailscale
+# This allows Prometheus to scrape Tempo metrics from the production cluster
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    tailscale.com/tailnet-fqdn: tempo-tailscale.rya-scala.ts.net
+  name: tempo-production
+  namespace: observability
+spec:
+  externalName: tempo-tailscale
+  type: ExternalName
+  ports:
+    - name: http-metrics
+      port: 3200
+      targetPort: 3200
+      protocol: TCP
