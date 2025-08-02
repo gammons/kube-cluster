@@ -757,6 +757,8 @@ serverFiles:
               source: 'truelist-production-k8s-metrics'
 
       - job_name: truelist-app-metrics
+        scrape_interval: 15s
+        scrape_timeout: 10s
         static_configs:
           - targets: ['ts-local-app-prometheus-exporter-hlhbw.tailscale.svc.cluster.local:9394']
 
