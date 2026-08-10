@@ -2,6 +2,12 @@ service:
   type: NodePort
   port: 8124
 
+# Pin to the node where the SONOFF Zigbee USB dongle is functional.
+# Proxmox passes the USB device to all VMs, but only one can bind cdc_acm.
+# Check which node has /dev/ttyACM0 and update this accordingly.
+nodeSelector:
+  kubernetes.io/hostname: k3s-node-1
+
 podSecurityContext:
   privileged: true
 

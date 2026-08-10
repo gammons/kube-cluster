@@ -56,9 +56,46 @@ blacklist {
 ```
 If a node is reprovisioned, this config must be reapplied.
 
+### SONOFF Zigbee dongle and node pinning
+
+The SONOFF Zigbee 3.0 USB Dongle Plus V2 is a single physical USB device on the Proxmox host. Proxmox passes it through to all k3s node VMs, but only one VM can actually use it — multiple VMs claiming it simultaneously causes contention and the dongle becomes unresponsive on all of them.
+
+**Current working node: k3s-node-1** (as of 2026-05-06)
+
+After a power outage or Proxmox restart, all VMs may re-bind `cdc_acm` and create `/dev/ttyACM0`. If the ZHA integration shows "initializing" and gets stuck, the dongle is likely in contention. Try moving the pod to a different node.
+
+**Diagnosing which node works:**
+
+All nodes may show `/dev/ttyACM0` as present, but the real test is whether the dongle responds on serial. If ZHA is stuck initializing, try moving to another node:
+```bash
+kubectl patch statefulset home-assistant -n home-assistant --type=merge \
+  -p '{"spec":{"template":{"spec":{"nodeSelector":{"kubernetes.io/hostname":"<node>"}}}}}'
+```
+
+**Device permissions:**
+
+The device needs 666 permissions. A udev rule has been added to k3s-node-1 (and k3s-node-2) at `/etc/udev/rules.d/99-zigbee.rules` to persist this across reboots:
+```
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d4", MODE="0666"
+```
+
+If moving to a new node, apply the udev rule and chmod:
+```bash
+kubectl debug node/<node> -it --image=ubuntu --profile=sysadmin -- \
+  chroot /host bash -c '
+    echo "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"1a86\", ATTRS{idProduct}==\"55d4\", MODE=\"0666\"" \
+      > /etc/udev/rules.d/99-zigbee.rules
+    udevadm control --reload-rules
+    chmod 666 /dev/ttyACM0'
+```
+
+Also update `values.yml` with the new node name.
+
+**Note:** `helm upgrade` on this chart currently fails due to an immutable StatefulSet field (related to `existingVolume`). If config changes are needed, either patch the resources directly or do a full `helm uninstall` + `helm install`.
+
 ### Notes
 
-- The Longhorn volume replica count was reduced from 3 to 1 during the incident. Consider scaling back to 2+ for redundancy:
+- The Longhorn volume replica count was reduced from 3 to 1 during the 2026-04-11 incident. Consider scaling back to 2+ for redundancy:
   ```bash
   kubectl patch volumes.longhorn.io <vol> -n longhorn-system --type=merge -p '{"spec":{"numberOfReplicas":2}}'
   ```
