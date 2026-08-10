@@ -1,0 +1,39 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: velero-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: velero
+      rules:
+        - alert: VeleroBackupFailed
+          expr: increase(velero_backup_failure_total[6h]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Velero backup failed"
+            description: "At least one Velero backup has failed in the last 6 hours. Check `velero backup get` and `velero backup logs`."
+        - alert: VeleroBackupPartiallyFailed
+          expr: increase(velero_backup_partial_failure_total[6h]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Velero backup partially failed"
+            description: "At least one Velero backup has partially failed in the last 6 hours. Check `velero backup describe` for skipped items."
+        - alert: VeleroNoSuccessfulBackup
+          expr: |
+            (time() - velero_backup_last_successful_timestamp{schedule="velero-homelab-daily"} > 93600)
+            or
+            absent(velero_backup_last_successful_timestamp{schedule="velero-homelab-daily"})
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            summary: "No successful Velero backup in over 26 hours"
+            description: "The velero-homelab-daily schedule has not produced a successful backup in more than 26 hours (or has never run). Note: fires until the first scheduled backup completes."

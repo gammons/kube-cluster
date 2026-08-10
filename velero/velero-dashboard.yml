@@ -1,0 +1,370 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: velero-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Truelist"
+data:
+  velero-dashboard.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": { "type": "grafana" },
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "graphTooltip": 1,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "datasource": { "type": "prometheus" },
+          "description": "Hours since the last successful backup of the daily schedule",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 25 },
+                  { "color": "red", "value": 26 }
+                ]
+              },
+              "unit": "h"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
+          "id": 1,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "orientation": "auto",
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "(time() - velero_backup_last_successful_timestamp{schedule=\"velero-homelab-daily\"}) / 3600",
+              "legendFormat": "hours since success",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Hours Since Last Successful Backup",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "description": "Cumulative backup outcomes (increase over selected range)",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [ { "color": "green", "value": null } ]
+              },
+              "unit": "short"
+            },
+            "overrides": [
+              {
+                "matcher": { "id": "byName", "options": "failed" },
+                "properties": [
+                  { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }
+                ]
+              },
+              {
+                "matcher": { "id": "byName", "options": "partial" },
+                "properties": [
+                  { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } },
+                  { "id": "thresholds", "value": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] } }
+                ]
+              }
+            ]
+          },
+          "gridPos": { "h": 6, "w": 12, "x": 6, "y": 0 },
+          "id": 2,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "orientation": "horizontal",
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "textMode": "value_and_name"
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "increase(velero_backup_success_total[$__range])",
+              "legendFormat": "successful",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "increase(velero_backup_partial_failure_total[$__range])",
+              "legendFormat": "partial",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "increase(velero_backup_failure_total[$__range])",
+              "legendFormat": "failed",
+              "range": true,
+              "refId": "C"
+            }
+          ],
+          "title": "Backup Outcomes",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "description": "Status of the BackupStorageLocation (1 = Available)",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "mappings": [
+                { "options": { "0": { "color": "red", "text": "Unavailable" }, "1": { "color": "green", "text": "Available" } }, "type": "value" }
+              ],
+              "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] },
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+          "id": 3,
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "orientation": "auto",
+            "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+            "textMode": "value"
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "velero_backup_location_status_gauge",
+              "legendFormat": "{{backup_storage_location}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Storage Location",
+          "type": "stat"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "description": "Per-backup duration and size (populated after each backup runs)",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "seconds",
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "pointSize": 6,
+                "showPoints": "always",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+          "id": 4,
+          "options": {
+            "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "velero_backup_duration_seconds",
+              "legendFormat": "{{schedule}} {{quantile}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Backup Duration",
+          "type": "timeseries"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "description": "Size of each backup tarball",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisPlacement": "auto",
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "lineWidth": 2,
+                "pointSize": 6,
+                "showPoints": "always",
+                "spanNulls": false
+              },
+              "mappings": [],
+              "unit": "bytes"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+          "id": 5,
+          "options": {
+            "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "velero_backup_tarball_size_bytes",
+              "legendFormat": "{{schedule}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Backup Size",
+          "type": "timeseries"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "description": "PVC (pod volume) backup outcomes via kopia",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "palette-classic" },
+              "custom": {
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisPlacement": "auto",
+                "drawStyle": "bars",
+                "fillOpacity": 60,
+                "lineWidth": 1,
+                "stacking": { "group": "A", "mode": "normal" }
+              },
+              "mappings": [],
+              "unit": "short"
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+          "id": 6,
+          "options": {
+            "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "increase(velero_volume_backup_success_total[$__interval])",
+              "legendFormat": "success",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "increase(velero_volume_backup_partial_failure_total[$__interval])",
+              "legendFormat": "partial",
+              "range": true,
+              "refId": "B"
+            },
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "increase(velero_volume_backup_failure_total[$__interval])",
+              "legendFormat": "failed",
+              "range": true,
+              "refId": "C"
+            }
+          ],
+          "title": "PVC Volume Backups",
+          "type": "timeseries"
+        },
+        {
+          "datasource": { "type": "prometheus" },
+          "description": "Status of individual backups (1 = Completed)",
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+              "mappings": [
+                { "options": { "0": { "color": "red", "text": "Failed" }, "1": { "color": "green", "text": "Completed" } }, "type": "value" }
+              ],
+              "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+            },
+            "overrides": []
+          },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+          "id": 7,
+          "options": {
+            "cellHeight": "sm",
+            "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+            "showHeader": true
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus" },
+              "editorMode": "code",
+              "expr": "velero_backup_last_status",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "__auto",
+              "range": false,
+              "refId": "A"
+            }
+          ],
+          "title": "Backup Status",
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": { "Time": true, "__name__": true, "container": true, "endpoint": true, "instance": true, "job": true, "namespace": true, "pod": true, "service": true },
+                "renameByName": { "Value": "Status", "backupName": "Backup", "schedule": "Schedule" }
+              }
+            }
+          ],
+          "type": "table"
+        }
+      ],
+      "refresh": "5m",
+      "schemaVersion": 38,
+      "style": "dark",
+      "tags": ["velero", "backup", "infrastructure"],
+      "templating": { "list": [] },
+      "time": { "from": "now-7d", "to": "now" },
+      "timezone": "",
+      "title": "Velero Backups",
+      "uid": "velero-backups",
+      "version": 1
+    }
