@@ -1,0 +1,38 @@
+initContainers:
+  - name: velero-plugin-for-aws
+    image: velero/velero-plugin-for-aws:v1.14.2
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+configuration:
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: gammons-velero-homelab
+      default: true
+      config:
+        region: us-east-1
+  defaultVolumesToFsBackup: true
+
+snapshotsEnabled: false
+deployNodeAgent: true
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    autodetect: true
+
+schedules:
+  homelab-daily:
+    schedule: "0 6 * * *"
+    template:
+      ttl: 168h
+      includedNamespaces:
+        - home-assistant
+        - dev-box
+        - openclaw
+        - openclaw-dottie
+        - openclaw-stonk
