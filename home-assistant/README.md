@@ -93,6 +93,27 @@ Also update `values.yml` with the new node name.
 
 **Note:** `helm upgrade` on this chart currently fails due to an immutable StatefulSet field (related to `existingVolume`). If config changes are needed, either patch the resources directly or do a full `helm uninstall` + `helm install`.
 
+## Envisalink alarm integration (2026-08-11)
+
+The Honeywell panel is integrated via an Envisalink EVL-4 at `192.168.1.32`.
+
+**Uses the [`envisalink_new`](https://github.com/ufodone/envisalink_new) custom component, NOT the core `envisalink` integration.** The core integration's library (pyenvisalink 4.7, unmaintained) fires all keypad keystrokes within ~1ms; the EVL-4 drops the final keystroke and arm/disarm fails with `Receive State Machine Timeout`. Verified by manual TPI test: the same keystrokes sent with 500ms spacing arm/disarm fine. `envisalink_new` queues commands sequentially with retry/timeout handling.
+
+**Setup pieces (all live on the PVC, `/config` in the pod):**
+
+- `custom_components/envisalink_new/` — installed manually (no HACS): clone the repo, then
+  `tar cf - -C <repo>/custom_components envisalink_new | kubectl exec -i -n home-assistant home-assistant-0 -- tar xf - -C /config/custom_components/`
+- `configuration.yaml` — contains `envisalink_new: !include envisialink.yaml`
+- `envisialink.yaml` — host, zones, partitions (copy of the one in this repo)
+- `secrets.yaml` — `envisalink_password` (EVL web login password) and `envisalink_code` (panel arm/disarm code)
+
+**EVL-4 notes:**
+
+- Port 4025 is the TPI (raw TCP API, not HTTP — browsers can't open it). Port 80 is the web config UI (HTTP basic auth).
+- Only ONE TPI client connection at a time. For manual testing, scale down the statefulset first, then scale back up.
+- Debug logging if needed: add `logger:` → `logs:` → `homeassistant.components.envisalink_new: debug` to configuration.yaml and restart.
+- "Show keypad" option (Settings → Devices & Services → EyezOn → Configure) is set to `never` so the UI doesn't prompt for the code; the stored code is sent automatically.
+
 ### Notes
 
 - The Longhorn volume replica count was reduced from 3 to 1 during the 2026-04-11 incident. Consider scaling back to 2+ for redundancy:
