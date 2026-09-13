@@ -731,7 +731,13 @@ spec:
                       name: immich-postgres
                       key: POSTGRES_DB
               command:
-                - /bin/sh
+                # MUST be /bin/bash, NOT /bin/sh. This image's /bin/sh is dash,
+                # which has no `pipefail`; because `set` is a special builtin the
+                # failure ABORTS the script on line 1 and the job can never
+                # produce a backup. pipefail is load-bearing here: without it
+                # `pg_dump | gzip > file` returns gzip's status, so a failed dump
+                # exits 0 and writes a valid ~20-byte gzip. Do not "simplify".
+                - /bin/bash
                 - -c
                 - |
                   set -euo pipefail
