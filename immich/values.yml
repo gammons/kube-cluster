@@ -96,6 +96,23 @@ valkey:
       existingClaim: immich-valkey-data
 
 server:
+  persistence:
+    # Velero's fs-backup (kopia) can only read a PVC that is mounted by a
+    # Running pod. immich-pgdump is otherwise mounted only by the pgdump
+    # CronJob pod, which is phase=Succeeded hours before the 06:00 backup, so
+    # Velero skipped it ("pod is not running") and the only database recovery
+    # path was never captured. Mounting it into the always-running server pod
+    # makes it visible. RWX on the nfs class, so the second mount is free.
+    # readOnly: Immich must never be able to write to or delete the dumps.
+    # Deliberately NOT added to backup-volumes-excludes below — the point is
+    # for Velero to back this one up.
+    immich-pgdump:
+      enabled: true
+      type: persistentVolumeClaim
+      existingClaim: immich-pgdump
+      globalMounts:
+        - path: /dumps
+          readOnly: true
   service:
     main:
       annotations:
