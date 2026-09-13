@@ -12,6 +12,12 @@
 # rolling back 3 of 4 VMs leaves the cluster inconsistent with the NFS dataset
 # and every VM powered off, which is not something to discover mid-incident.
 #
+# ONLY THE MOST RECENT SET CAN BE ROLLED BACK TO. Proxmox refuses to roll a
+# zvol back to anything but its newest snapshot, so rollback checks recency as
+# well as presence, on all 5 targets, before it stops anything. Hold at most one
+# gate at a time; if you need an older one, delete the newer sets first and
+# accept that you are discarding the route back past them.
+#
 # Usage: snapshot-cluster.sh {create|list|rollback|delete} <label>
 set -euo pipefail
 
@@ -41,22 +47,106 @@ esac
 # hours with every VM powered off. 10s is generous for a LAN host.
 r() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$PVE" "$@"; }
 
-# Snapshot names on VM $1, one per line. qm listsnapshot draws a tree:
+# One row per snapshot on VM $1: "<name><TAB><YYYY-MM-DD HH:MM:SS>".
+# qm listsnapshot draws a tree:
 #   `-> pre-metallb          2026-09-13 07:00:00     cluster gate pre-metallb
 #    `-> current                                     You are here!
-# so strip the indent and the "`->" marker, then keep the first field.
-# "current" is the live state, not a snapshot, so drop it.
-vm_snapshots() {
+# so strip the indent and the "`->" marker. "current" is the live state, not a
+# snapshot, so drop it.
+#
+# The timestamp column comes from strftime("%F %H:%M:%S") in
+# PVE::GuestHelpers::print_snapshot_tree, so it is fixed-width and zero-padded
+# and orders correctly under a plain string compare. A snapshot carrying no
+# snaptime yields an EMPTY second field; callers must treat that as
+# "unorderable", never as "old" -- see vm_blocking_snapshots.
+vm_snapshot_rows() {
   r "qm listsnapshot $1" \
     | sed -e 's/^[[:space:]`]*//' -e 's/^->[[:space:]]*//' \
-    | awk 'NF > 0 && $1 != "current" { print $1 }'
+    | awk 'NF > 0 && $1 != "current" {
+             ts = ""
+             if ($2 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$/ &&
+                 $3 ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9]$/) ts = $2 " " $3
+             print $1 "\t" ts
+           }'
 }
 
-# Snapshot names on the NFS dataset, one per line. The sed matches only
-# "<dataset>@", so snapshots of any child dataset are ignored.
+# Snapshot names on VM $1, one per line. A pipeline, so under `pipefail` an ssh
+# failure upstream still fails the whole thing -- survey() depends on that.
+vm_snapshots() { vm_snapshot_rows "$1" | cut -f1; }
+
+# Snapshots on VM $1 that block a rollback to label $2, one per line. Empty
+# output means $2 is the most recent snapshot on that VM. Returns 2 if the VM
+# could not be queried at all, 3 if $2 is not on it.
+#
+# WHY THIS EXISTS. The VM disks live on `zfspool` storage, and PVE refuses to
+# roll a zvol back to anything but its newest snapshot:
+#
+#   die "can't rollback, '$snap' is not most recent snapshot on '$volid'\n"
+#     -- PVE/Storage/ZFSPoolPlugin.pm, volume_rollback_is_possible()
+#
+# Surveying for label *presence* alone is therefore not enough. With a newer
+# snapshot present the pre-flight used to pass, the script stopped all 4 VMs,
+# and then died on the first `qm rollback` -- leaving the whole cluster powered
+# off with nothing rolled back, during an incident. That is strictly worse than
+# refusing to start.
+#
+# ">=" rather than ">" is deliberate. A snapshot sharing $2's second cannot be
+# ordered against it from this output, and PVE orders by ZFS creation time,
+# which is not visible here. Reporting it costs the operator one `delete`; not
+# reporting it costs the outage above. An unparseable/absent timestamp is
+# reported for the same reason, as is *every* other snapshot when $2's own
+# timestamp is unreadable. This guard fails closed.
+#
+# Known limitation: the timestamps are rendered in the Proxmox host's local
+# time, so during a DST fall-back fold an hour of snapshots can compare in the
+# wrong order. PVE's own check still catches that case -- the cost is that this
+# pre-flight degrades to the old behaviour for that one hour a year, not that it
+# lets something new through.
+vm_blocking_snapshots() {
+  local rows
+  rows=$(vm_snapshot_rows "$1") || return 2
+  printf '%s\n' "$rows" | awk -F'\t' -v want="$2" '
+    { n++; name[n] = $1; ts[n] = $2; if ($1 == want) { found = 1; wantts = $2 } }
+    END {
+      if (!found) exit 3
+      for (i = 1; i <= n; i++) {
+        if (name[i] == want) continue
+        # Concatenating "" forces a string compare. These timestamps are never
+        # numeric, but do not leave that to awk strnum coercion rules.
+        if (ts[i] == "" || ("" ts[i]) >= ("" wantts)) print name[i]
+      }
+    }'
+}
+
+# Snapshot names on the NFS dataset, one per line, OLDEST FIRST. The sed matches
+# only "<dataset>@", so snapshots of any child dataset are ignored.
+#
+# `-s creation` is load-bearing, not cosmetic: dataset_blocking_snapshots()
+# reads recency straight out of this order. zfs's default sort is by name, which
+# would make "newer" mean "alphabetically later".
 dataset_snapshots() {
-  r "zfs list -t snapshot -H -o name -r ${DATASET}" \
+  r "zfs list -t snapshot -H -o name -s creation -r ${DATASET}" \
     | sed -n "s|^${DATASET}@||p"
+}
+
+# Snapshots of the NFS dataset newer than label $1, one per line. Returns 2 if
+# the dataset could not be queried, 3 if $1 is not on it.
+#
+# The VM half above refuses when newer snapshots exist. This half must refuse
+# too, and for the opposite reason: `zfs rollback -r` does NOT refuse -- the -r
+# means "destroy everything newer". Left unchecked, the two halves of a set that
+# is documented to move as one unit behave differently in exactly the same
+# situation: the VMs abort, the dataset silently discards snapshots. Refuse on
+# both, and let the operator delete deliberately.
+dataset_blocking_snapshots() {
+  local snaps
+  snaps=$(dataset_snapshots) || return 2
+  printf '%s\n' "$snaps" | awk -v want="$1" '
+    { n++; name[n] = $0; if ($0 == want) found = n }
+    END {
+      if (!found) exit 3
+      for (i = found + 1; i <= n; i++) print name[i]
+    }'
 }
 
 # Power state of VM $1, e.g. "stopped" or "running". qm status prints one line,
@@ -172,6 +262,55 @@ case "$ACTION" in
       exit 1
     }
     echo "OK: '$LABEL' present on all 4 VMs and ${DATASET}"
+    # Presence is not enough -- the label must also be the NEWEST snapshot on
+    # every target. See vm_blocking_snapshots() and dataset_blocking_snapshots()
+    # for why each half needs this, and why they need it for opposite reasons.
+    # This runs before the confirm prompt and before anything is stopped: an
+    # abort here costs nothing, an abort after the stop loop costs the cluster.
+    echo "-- confirming '$LABEL' is the most recent snapshot on all 5 targets"
+    BLOCKED=""
+    for id in $VMS; do
+      blockers=$(vm_blocking_snapshots "$id" "$LABEL") && rc=0 || rc=$?
+      case "$rc" in
+        0) ;;
+        2) echo "ABORT: cannot list snapshots of VM $id; nothing rolled back" >&2; exit 1 ;;
+        3) echo "ABORT: '$LABEL' vanished from VM $id between the survey and the" >&2
+           echo "       recency check; nothing rolled back. Re-run." >&2
+           exit 1 ;;
+        *) echo "ABORT: recency check failed on VM $id (status $rc); nothing rolled back" >&2; exit 1 ;;
+      esac
+      [ -z "$blockers" ] || BLOCKED="$BLOCKED
+  vm$id: $(printf '%s' "$blockers" | tr '\n' ' ')"
+    done
+    blockers=$(dataset_blocking_snapshots "$LABEL") && rc=0 || rc=$?
+    case "$rc" in
+      0) ;;
+      2) echo "ABORT: cannot list snapshots of ${DATASET}; nothing rolled back" >&2; exit 1 ;;
+      3) echo "ABORT: '$LABEL' vanished from ${DATASET} between the survey and the" >&2
+         echo "       recency check; nothing rolled back. Re-run." >&2
+         exit 1 ;;
+      *) echo "ABORT: recency check failed on ${DATASET} (status $rc); nothing rolled back" >&2; exit 1 ;;
+    esac
+    [ -z "$blockers" ] || BLOCKED="$BLOCKED
+  ${DATASET}: $(printf '%s' "$blockers" | tr '\n' ' ')"
+    [ -z "$BLOCKED" ] || {
+      echo "ABORT: '$LABEL' is not the most recent snapshot. Blocked by:$BLOCKED" >&2
+      echo "" >&2
+      echo "       Nothing has been changed and no VM has been stopped." >&2
+      echo "       Proxmox refuses to roll a zvol back to anything but its newest" >&2
+      echo "       snapshot, so this rollback would stop all 4 VMs and then fail on" >&2
+      echo "       the first one -- cluster powered off, nothing reverted." >&2
+      echo "       The dataset would not fail: 'zfs rollback -r' would DESTROY those" >&2
+      echo "       newer snapshots instead. Neither outcome is one to discover" >&2
+      echo "       mid-incident, so both halves refuse here." >&2
+      echo "" >&2
+      echo "       Decide which of the newer sets you no longer need, remove each" >&2
+      echo "       with '$0 delete <label>', then re-run this rollback. Deleting a" >&2
+      echo "       snapshot set discards the route back past that point -- that is" >&2
+      echo "       the choice being made, so make it deliberately." >&2
+      exit 1
+    }
+    echo "OK: '$LABEL' is the most recent snapshot on all 5 targets"
     echo "!! rollback discards ALL changes since '$LABEL' on 4 VMs and ${DATASET}"
     echo "!! VMs will be stopped, rolled back, and restarted."
     printf "type the label again to confirm: "; read -r c
@@ -224,6 +363,10 @@ case "$ACTION" in
       }
       ROLLED="$ROLLED vm$id"
     done
+    # -r destroys snapshots newer than ${LABEL}. The recency pre-flight above
+    # has already proved there are none, so this is a no-op kept for the case
+    # where something creates one inside this window -- it is no longer the
+    # thing that silently diverges from the VM half's behaviour.
     r "zfs rollback -r ${DATASET}@${LABEL}" || {
       echo "FAILED: all 4 VMs rolled back but ${DATASET} did NOT." >&2
       echo "        The nfs PVCs are still newer than the VMs. Leave the VMs stopped," >&2

@@ -112,5 +112,41 @@ refuses a label already in use. `rollback` verifies the label exists on all five
 targets and that all 4 VMs actually stopped before it reverts anything, so a
 partial rollback cannot leave the cluster split across two points in time.
 
+### Only the most recent set can be rolled back to
+
+**Hold at most one gate at a time.** The VM disks are on `zfspool` storage, and
+Proxmox refuses to roll a zvol back to anything but its newest snapshot:
+
+```
+can't rollback, '<snap>' is not most recent snapshot on '<volid>'
+```
+
+(`PVE/Storage/ZFSPoolPlugin.pm`, `volume_rollback_is_possible`.)
+
+The two halves of a set do not fail the same way, which is why this needs saying
+out loud rather than being left to the tools:
+
+| Half | With a newer snapshot present |
+|---|---|
+| 4 VMs (`qm rollback`) | **refuses** — dies on the first VM |
+| `main-pool/k3s-nfs` (`zfs rollback -r`) | **succeeds, destroying** every newer dataset snapshot |
+
+So `rollback` checks **recency as well as presence** on all five targets, before
+the confirmation prompt and before any VM is stopped. If a newer set exists it
+names the blocking labels and stops, having changed nothing. Without that check
+the old behaviour was: pre-flight passes, all 4 VMs stop, the first `qm rollback`
+dies — cluster powered off, nothing reverted, mid-incident.
+
+To reach an older set you must `delete` the newer ones first. That is a real
+choice, not a formality: **deleting a set discards the route back past that
+point.** If you find yourself doing it during an incident, stop and think about
+which point in time you actually want to land on.
+
+The recency check reads the timestamps `qm listsnapshot` prints, which are in the
+Proxmox host's local time. During a DST fall-back fold an hour of snapshots can
+compare in the wrong order; Proxmox's own check still catches that case, so the
+consequence is a pre-flight that degrades to the old behaviour for one hour a
+year, not one that lets something new through.
+
 **Delete snapshots once a change is confirmed.** They are copy-on-write, so cost
 grows with divergence; leaving them indefinitely consumes `main-pool`.
