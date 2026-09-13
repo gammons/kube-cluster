@@ -88,3 +88,29 @@ silence itself becomes the alarm.
 ## Related
 
 - `../docs/superpowers/specs/2026-09-12-proxmox-bulk-storage-design.md`
+
+## Cluster snapshots
+
+`snapshot-cluster.sh` snapshots all 4 k3s VMs plus `main-pool/k3s-nfs` as one
+unit — together they hold the k3s SQLite datastore, all 23 `local-path` PVCs and
+all 15 `nfs` PVCs. Velero is not a substitute; it covers a subset of namespaces
+and no VM-level state.
+
+```sh
+./snapshot-cluster.sh create   pre-<change>   # gate before any upgrade
+./snapshot-cluster.sh list
+./snapshot-cluster.sh rollback pre-<change>   # stops, reverts and restarts all 4 VMs
+./snapshot-cluster.sh delete   pre-<change>   # once the change is confirmed good
+```
+
+**Labels accept `[A-Za-z0-9_-]` only, and may not start with `-`.** Dots are
+rejected, so `pre-k3s-v1.30.5` fails — use `pre-k3s-v1-30-5`.
+
+`create` refuses to run unless every ZFS pool is healthy and `qemu-guest-agent`
+answers on all 4 VMs, so a snapshot is never silently crash-consistent. It also
+refuses a label already in use. `rollback` verifies the label exists on all five
+targets and that all 4 VMs actually stopped before it reverts anything, so a
+partial rollback cannot leave the cluster split across two points in time.
+
+**Delete snapshots once a change is confirmed.** They are copy-on-write, so cost
+grows with divergence; leaving them indefinitely consumes `main-pool`.
