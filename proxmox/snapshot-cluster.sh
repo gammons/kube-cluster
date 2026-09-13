@@ -4,7 +4,10 @@
 # Covers everything: the k3s SQLite datastore and all 23 local-path PVCs live on
 # the VM zvols; all 15 nfs PVCs live on main-pool/k3s-nfs.
 #
-# Velero is NOT a substitute -- it covers 6 of ~31 namespaces.
+# Velero is NOT a substitute. Even once its schedule is widened to ~25 of the ~31
+# namespaces it covers NAMESPACED OBJECTS ONLY -- `includeClusterResources` is
+# unset, so PVs, StorageClasses, CRDs and ClusterIssuers are not in a Velero
+# backup at all. This script is the only thing that covers them.
 #
 # A snapshot "set" is one label applied to 5 targets: the 4 VMs and the NFS
 # dataset. create and rollback both survey all 5 targets before touching

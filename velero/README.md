@@ -1,16 +1,44 @@
 # Velero backups
 
-Backs up selected namespaces (and their PVC data) to S3 daily.
+Backs up **every namespace except a short deny-list** (and their PVC data) to S3
+daily.
 
 ## What is backed up
 
-Namespaces (all resources + PVC data via kopia filesystem backup):
+`velero/values.yml` uses `excludedNamespaces`, **not** `includedNamespaces`. A new
+namespace is therefore backed up by default rather than being silently unprotected
+until someone remembers to add it. `values.yml` is the source of truth; this section
+explains it and will go stale if you trust it over the file.
 
-- home-assistant
-- dev-box
-- openclaw
-- openclaw-dottie
-- openclaw-stonk
+Excluded, and why:
+
+| Namespace | Why excluded |
+|---|---|
+| `kube-system`, `kube-public`, `kube-node-lease` | Kubernetes-managed; restored by the cluster, not from a backup |
+| `velero` | Velero's own namespace — backing it up with itself achieves nothing useful |
+| `longhorn-system`, `signoz` | `Terminating` for 2y+; backing them up produces only errors |
+
+Everything else — roughly 25 namespaces, including `immich`, `monitoring`,
+`truelist-staging` (MariaDB + Redis), `infra`, `unifi`, `wprb-rocks`, `pmbot`,
+`cert-manager`, `home-assistant`, `dev-box` and the `openclaw-*` set — is in scope.
+
+This was previously an allow-list of five namespaces. It did not even include
+`immich`, and it left `monitoring`, `truelist-staging` and `infra` unprotected.
+
+**Namespaced objects only.** `includeClusterResources` is left unset, and Velero's
+auto-rule only defaults it to `true` for an unrestricted backup — a non-empty
+`excludedNamespaces` keeps it `false`. So CRDs, ClusterRoles/Bindings,
+StorageClasses, ClusterIssuers and PVs are **not** backed up here; the Proxmox
+snapshot set (`../proxmox/snapshot-cluster.sh`) is what covers those. Setting it to
+`true` is a separate decision with its own restore implications.
+
+**These backups now carry Secrets from ~25 namespaces**, including cert-manager's
+ACME account key, every TLS private key, registry and DB credentials, and the
+Tailscale OAuth secret. The bucket has SSE-S3 (AES256) applied at bucket level, so
+the objects are encrypted at rest, but whether SSE-S3 is sufficient for that content
+— versus SSE-KMS with a customer-managed key and an audited bucket policy — is an
+open question recorded in
+`../docs/superpowers/specs/2026-09-12-k3s-cluster-upgrade-design.md`.
 
 Schedule: daily at 06:00 UTC, backups expire after 7 days (TTL 168h).
 Managed by the `velero-homelab-daily` Schedule created by the Helm chart.
@@ -63,6 +91,31 @@ PVCs contribute nothing.
    ```
 
    The credentials file is passed with `--set-file` so the secret stays out of git.
+
+## Upgrading
+
+**`--set-file credentials.secretContents.cloud` is required on every `helm upgrade`,
+not just the install.** The chart renders the `velero` Secret from
+`.Values.credentials.secretContents` every time. That key is deliberately absent from
+`values.yml`, so an upgrade without the flag re-renders the Secret with an empty
+`data:` and Velero loses its S3 credentials — silently, until the next backup fails.
+
+```sh
+helm upgrade velero vmware-tanzu/velero --kube-context local-k3s -n velero \
+  --version <chart-version> -f values.yml \
+  --set-file credentials.secretContents.cloud=./credentials-velero
+```
+
+Then confirm the key survived rather than assuming it:
+
+```sh
+kubectl --context local-k3s get secret velero -n velero \
+  -o jsonpath='{.data.cloud}' | base64 -d | grep -c aws_access_key_id   # expect 1
+```
+
+If `credentials-velero` is missing from this directory (it is gitignored, so a fresh
+clone will not have it), recover it from the `velero-homelab` IAM access key **before**
+upgrading. Do not upgrade without it.
 
 5. velero CLI: installed at `~/bin/velero` (downloaded from the v1.18.1 GitHub release).
 

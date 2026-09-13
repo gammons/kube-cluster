@@ -2,7 +2,9 @@
 
 **Date:** 2026-09-12, revised 2026-09-13 after Phase A
 **Cluster:** `local-k3s` (kubectl context), 4 VMs on Proxmox host `pve` (192.168.5.1)
-**Scope approved:** Phases 0-4. Phase 5+ (Kubernetes minor hops) deferred pending reassessment.
+**Scope approved:** Phases 0-4. Phase 5+ (Kubernetes minor hops, plus the
+cert-manager 1.17 → 1.21 move that only becomes possible at Kubernetes 1.33)
+deferred pending reassessment.
 
 > **Always pass `--context local-k3s` explicitly.** The kubeconfig contains 8 contexts
 > including `aws-truelist-prod` and `production`, and `current-context` has previously
@@ -46,9 +48,14 @@ assumed.
 | k3s / Kubernetes | **v1.29.4+k3s1** | v1.36.4+k3s1 | **7 minors** | install script, systemd |
 | Tailscale operator | **1.76.6** (2024-11-10) | **1.102.3** | **26 releases** | Helm (`tailscale/tailscale-operator`) |
 | MetalLB | **v0.14.5** | **v0.16.1** | 2 minors | **raw `kubectl apply`** (not Helm) |
-| cert-manager | **v1.14.5** (2024-05) | **v1.21.2** | **7 minors** | Helm (`jetstack/cert-manager`) |
+| cert-manager | **v1.14.5** (2024-05) | **v1.21.2** † | **7 minors** | Helm (`jetstack/cert-manager`) |
 | Traefik | v2.10.5 (chart 25.0.3) | v3.x | 1 major | k3s packaged component |
 | Velero | 1.18.1 | — | — | Helm |
+
+† **"Latest" is not the target.** cert-manager 1.21 requires Kubernetes ≥1.33 and
+cannot run on this cluster at all. The reachable target is **v1.17.4** — see
+"cert-manager is EOL, not a gate" below. Closing the remaining 4 minors is Phase 5+
+work, gated on the cluster reaching 1.33.
 
 **Nodes:** 4 × Ubuntu 24.04, kernel 6.8.0-139, all `v1.29.4+k3s1`, age 2y122d.
 `k3s-controller` (192.168.10.1) is `Ready,SchedulingDisabled`; workers `k3s-node-1/2/3`
@@ -85,8 +92,17 @@ targets as one unit — see `proxmox/README.md`. Use it rather than raw `qm`/`zf
 a partial snapshot set is worse than none, because it leaves the cluster split across
 two points in time. The script refuses to create a set unless every pool is healthy
 and `qemu-guest-agent` answers on all 4 VMs, refuses a label already in use, and
-before rolling back verifies the label exists on all five targets *and* that all 4 VMs
-actually stopped.
+before rolling back verifies the label exists on all five targets, is the *most
+recent* snapshot on all five, and that all 4 VMs actually stopped.
+
+**Only the most recent set can be rolled back to, so hold at most one gate at a
+time.** Proxmox refuses to roll a zvol back to anything but its newest snapshot
+(`PVE/Storage/ZFSPoolPlugin.pm`, `volume_rollback_is_possible`), while
+`zfs rollback -r` on the dataset would instead *destroy* the newer snapshots — the
+two halves of a "one unit" set fail in opposite directions on the same input. The
+script now refuses on both, before stopping anything. Reaching an older set means
+deleting the newer ones first, which discards the route back past them: a real
+choice, not a formality.
 
 Labels accept `[A-Za-z0-9_-]` only and may not begin with `-`. **Dots are rejected**,
 so `pre-k3s-v1.30.5` fails — use `pre-k3s-v1-30-5`.
@@ -189,11 +205,41 @@ across the v2→v3 boundary. CRDs for both `traefik.containo.us` (removed in v3)
 This matters because k3s reapplies its packaged Traefik chart on restart; a k3s
 upgrade will bump Traefik whether or not we ask it to.
 
-### cert-manager is a hard gate
+### cert-manager is EOL, not a gate — and it must not get ahead of the cluster
 
-v1.14.5 supports Kubernetes ≤1.29. Its **validating/mutating webhooks** will fail
-against a 1.30+ API server, which would break all Certificate/Issuer admission.
-Must be upgraded before any Kubernetes minor hop.
+An earlier revision of this spec claimed v1.14.5 "supports Kubernetes ≤1.29" and
+that its webhooks "will fail against a 1.30+ API server", making cert-manager a hard
+gate that the whole phase ordering hung off. **That was wrong**, and it was wrong in
+the direction that produced an unexecutable plan. Checked against
+cert-manager.io/docs/releases on 2026-09-13:
+
+| cert-manager | Supported Kubernetes | Upstream EOL |
+|---|---|---|
+| 1.21 | **1.33 → 1.36** | current |
+| 1.17 | **1.29 → 1.33** | Oct 2025 (commercial LTS from Palo Alto Networks to Feb 2027) |
+| 1.14 | **1.24 → 1.31** | Oct 2024 |
+
+The installed 1.14.5 supports Kubernetes up to **1.31**, so it gates nothing in
+Phases 0-4 and would survive the first two minor hops unaided.
+
+The honest reasons to upgrade it are different, and both still hold:
+
+- **1.14 has been EOL since Oct 2024** — no security or bug fixes.
+- **cert-manager must never get *ahead* of the cluster's Kubernetes version.**
+  This is the constraint that actually bites, and it bit in the opposite
+  direction from the one assumed: the target that was picked, 1.21, requires
+  Kubernetes ≥1.33, four minors above this cluster. It cannot be installed here
+  at all. The reachable target is **v1.17.4** (newest 1.17 patch, verified
+  available), which supports 1.29 and every hop through 1.33.
+
+Because 1.17 tops out at exactly the release 1.21 starts at, **1.33 is the only
+Kubernetes version at which the 1.17 → 1.21 move is possible.** That makes
+cert-manager a genuine gate — but for the 1.33 → 1.34 hop in Phase 5+, not for
+anything in Phases 0-4.
+
+The consequence for the plan is that its cert-manager work splits: Task 10
+(→ v1.17.4) is executable now; Task 11 (→ v1.21.2) is not sequenceable until the
+Kubernetes hops reach 1.33 and is deferred to Phase 5+.
 
 Existing issue: `truelist-staging/truelist-stag-io-cert` has been `READY=False` for
 **171 days**, with a `cm-acme-http-solver-sqcfr` pod and orphan solver Ingress still
@@ -322,14 +368,25 @@ Verify after: all 5 VIPs still assigned, Traefik still reachable on 192.168.20.1
 Note: benign-but-noisy `"Failed to retrieve lbIPs family","reason":"nolbIPsIPFamily"`
 errors in the 0.14.x controller log should disappear.
 
-### Phase 3 — cert-manager v1.14.5 → v1.21.2
+### Phase 3 — cert-manager v1.14.5 → v1.17.4
 
-Gate for all Kubernetes hops. This is a **7-minor jump**; cert-manager supports
-upgrading directly between 1.x releases but requires reading the intervening release
-notes, and CRDs must be applied **before** the chart.
+**Not** a gate for the Kubernetes hops in this scope — 1.14 supports Kubernetes up
+to 1.31 and would survive them. The reason to move is that 1.14 has been EOL since
+Oct 2024.
 
-Consider stepping via an intermediate release (e.g. 1.17) rather than jumping straight
-to 1.21, so a failure has a smaller surface to bisect.
+v1.17.4 is the **ceiling**, not a waypoint: 1.17 is the newest cert-manager that
+supports Kubernetes 1.29, and 1.21 requires ≥1.33. This is a 3-minor jump;
+cert-manager supports upgrading directly between 1.x releases but requires reading
+the intervening release notes, and CRDs must be applied **before** the chart.
+
+**The trade being made, deliberately:** 1.17 reached upstream EOL in Oct 2025, so
+this lands on a release that gets no upstream fixes. Palo Alto Networks publish a
+commercial **1.17 LTS supported to Feb 2027**, which sets the horizon. Stopping here
+is a decision with a deadline attached, not an oversight: the cluster must reach
+Kubernetes 1.33 — and cert-manager 1.21 with it — before Feb 2027, or accept running
+unmaintained certificate infrastructure. That is the real schedule pressure behind
+Phase 5+, and it is a stronger argument for doing the hops than anything in the
+original "cert-manager is a hard gate" framing.
 
 Verify after: all 5 Certificates reconcile, `letsencrypt-prod` ClusterIssuer stays
 `Ready`, and the webhook is serving (a broken cert-manager webhook blocks all
@@ -343,17 +400,42 @@ No API changes within a patch release, so this validates the upgrade *mechanism*
 Order: controller first, then workers one at a time, draining each. Expect workloads
 with `local-path` PVCs on the drained node to be unavailable until it returns.
 
-### Phase 5+ — Kubernetes minor hops (DEFERRED)
+### Phase 5+ — Kubernetes minor hops, and the cert-manager 1.21 move (DEFERRED)
 
 v1.30 → v1.31 → v1.32 → v1.33 → v1.34 → v1.35 → v1.36, one at a time, each with a
 snapshot gate and verification. Reassess after Phase 4.
 
 Before starting: re-sample `apiserver_requested_deprecated_apis` after ≥7 days uptime.
 
+**cert-manager 1.17 → 1.21 belongs in the middle of this phase, at exactly one
+point.** 1.17 supports Kubernetes up to 1.33; 1.21 requires ≥1.33. So:
+
+| Cluster at | cert-manager must be |
+|---|---|
+| 1.29 → 1.31 | 1.14 (supported) or 1.17 |
+| 1.32 → 1.33 | **1.17** (1.14 is out of range above 1.31) |
+| 1.34 → 1.36 | **1.21** (1.17 is out of range above 1.33) |
+
+Kubernetes **1.33 is the only version both support**, so the 1.17 → 1.21 upgrade
+must happen while the cluster is sitting on 1.33 — after that hop lands and before
+the 1.33 → 1.34 hop starts. Missing that window means going back down, not forward.
+
+The plan's **Task 11** is this upgrade, written and reviewed but not sequenceable in
+Phases 0-4. It is deferred here rather than deleted; see the "DEFERRED" marker in its
+slot in `../plans/2026-09-13-k3s-cluster-upgrade-phases-0-4.md`. Give it its own
+snapshot gate, taken and released within the task, exactly as Task 10 does.
+
+Deadline: the 1.17 commercial LTS ends **Feb 2027**. Reaching 1.33 is what unblocks
+getting off it.
+
 Open question for that phase: continue in-place, or rebuild at v1.36 with corrected
 defaults (etcd instead of SQLite, `--disable=servicelb`, possibly HA control plane).
-A rebuild avoids 7 hops of deprecation archaeology but requires migrating 38 PVCs,
-and Velero covers only 5 namespaces today.
+A rebuild avoids 7 hops of deprecation archaeology but requires migrating 38 PVCs.
+Velero's coverage is the wrong thing to lean on either way: after Phase B Task 4 it
+spans ~25 namespaces (6 before), but **namespaced objects only** —
+`includeClusterResources` is unset, so PVs, StorageClasses, CRDs and ClusterIssuers
+are not in it. A rebuild has to plan the PV migration explicitly rather than treating
+Velero as the mechanism.
 
 ---
 
@@ -383,22 +465,45 @@ incidental are load-bearing.
   absent" — which would defeat the pre-flight entirely.
 - **Dash-only snapshot labels.** The charset check rejects dots, so every label in the
   plan is dash-separated on purpose, not stylistically.
-- **`cert-manager/install-crd.sh` pins the final v1.21.2.** Running it during the
-  deliberate intermediate stop at v1.17.2 (Task 10) would jump straight to the end and
-  defeat the bisect. Task 10 uses explicit inline commands for that reason.
-- **Task 7 is the only task in the plan that writes a repo file**
-  (`cert-manager/README.md`). Task 11's verification accounts for that; other tasks'
-  `Files:` lines all read `none`.
+- **`cert-manager/install-crd.sh` pins v1.17.4, not the newest cert-manager.** The
+  pin is bounded by the *cluster's* Kubernetes version. It previously pinned v1.21.2,
+  which requires Kubernetes ≥1.33 — the repo's own install script would have
+  installed a version this cluster cannot run. Raise it only alongside Kubernetes,
+  and never ahead of it. Task 10 still uses explicit inline commands rather than
+  running the script, so the plan and the script stay independently reviewable.
+- **Two tasks in the plan write repo files: Task 6 (Step 9, top-level `README.md`)
+  and Task 7 (Step 4, `cert-manager/README.md`).** An earlier revision of this spec
+  said Task 7 was the only one; that claim was added one commit *after* Task 6 Step 9
+  was, and was simply stale. Both tasks' `Files:` lines now say so; every other task's
+  reads `none`.
 
 ### Open questions — for the human, not the executing agent
 
-- **Velero backups now carry Secrets into S3 with no encryption configured.** Widening
-  to ~25 namespaces sweeps cert-manager's ACME account key and every TLS private key,
-  `infra` registry credentials, `truelist-staging` DB credentials, and the Tailscale
-  OAuth secret into `s3://gammons-velero-homelab`, whose
-  `backupStorageLocation[0].config` sets only `region` — no `serverSideEncryption`, no
-  `kmsKeyId`. **This must be answered before Task 4 Step 5**, which *is* the first
-  widened backup.
+- **Velero backups now carry Secrets into S3. Who can read them, and who holds the
+  key?** Widening to ~25 namespaces sweeps cert-manager's ACME account key and every
+  TLS private key, `infra` registry credentials, `truelist-staging` DB credentials,
+  and the Tailscale OAuth secret into `s3://gammons-velero-homelab`.
+
+  **The objects are not unencrypted.** An earlier revision of this question said the
+  bucket had "no `serverSideEncryption`, no `kmsKeyId`", reading only
+  `backupStorageLocation[0].config` in `velero/values.yml`, which does set just
+  `region`. But `velero/README.md:38-39` records `put-bucket-encryption` with
+  `SSEAlgorithm: AES256` applied at the **bucket** level, which encrypts every object
+  regardless of what the BSL asks for. The BSL config being bare is not evidence of
+  plaintext.
+
+  What is genuinely unresolved is narrower, and still a human decision:
+
+  - **Key management.** Bucket-default SSE-S3 (AES256) means AWS holds the key and
+    any principal with `s3:GetObject` gets plaintext back transparently. SSE-KMS with
+    a customer-managed key would make `kms:Decrypt` a second, separately auditable
+    gate, and would let the key be disabled. Worth it for this content, or not?
+  - **Bucket access policy.** Public access is blocked and the `velero-homelab` IAM
+    user is scoped to this bucket, but nothing has been checked about which *other*
+    principals in the account can read it. With cluster-wide Secrets in there, that
+    set is the real blast radius.
+
+  **This must be answered before Task 4 Step 5**, which *is* the first widened backup.
 - **That first widened backup will likely exceed Task 4's own 60-minute rollback
   trigger.** Newly in scope: harbor ~107Gi, tv-channel 75Gi, monitoring's 50Gi
   Prometheus TSDB, elk 20G. Filesystem-backing a live TSDB or Elasticsearch data
