@@ -1,0 +1,53 @@
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: immich-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+spec:
+  groups:
+    - name: immich
+      rules:
+        - alert: ImmichServerDown
+          expr: up{namespace="immich", job=~".*server.*"} == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Immich server is down"
+            description: "The Immich server has been unreachable for 10 minutes. Check `kubectl -n immich get pods`."
+
+        - alert: ImmichPostgresDown
+          expr: kube_statefulset_status_replicas_ready{namespace="immich", statefulset="immich-postgres"} < 1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Immich Postgres has no ready replica"
+            description: "immich-postgres has had no ready replica for 10 minutes. Immich cannot function without it."
+
+        - alert: ImmichPgDumpFailed
+          expr: |
+            time() - kube_cronjob_status_last_successful_time{namespace="immich", cronjob="immich-pgdump"} > 172800
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Immich pg_dump has not succeeded in 48h"
+            description: "The nightly database dump is the only recovery path for Immich's database. Check `kubectl -n immich get jobs`."
+
+        - alert: ImmichLibraryVolumeFilling
+          expr: |
+            (
+              kubelet_volume_stats_used_bytes{namespace="immich", persistentvolumeclaim="immich-library"}
+              / kubelet_volume_stats_capacity_bytes{namespace="immich", persistentvolumeclaim="immich-library"}
+            ) > 0.85
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Immich library volume above 85%"
+            description: "The bulk pool backing the Immich library is filling up. It is a single 8TB disk with no redundancy."
