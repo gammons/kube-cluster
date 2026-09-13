@@ -30,10 +30,16 @@ schedules:
     schedule: "0 6 * * *"
     template:
       ttl: 168h
-      includedNamespaces:
-        - home-assistant
-        - dev-box
-        - openclaw
-        - openclaw-dottie
-        - openclaw-stonk
-        - immich
+      # Deny-list rather than allow-list: a new namespace is backed up by
+      # default instead of being silently unprotected until someone remembers
+      # to add it. Previously this covered 6 of ~31 namespaces, omitting
+      # monitoring, truelist-staging (mariadb + redis), infra and others.
+      excludedNamespaces:
+        - kube-system
+        - kube-public
+        - kube-node-lease
+        - velero
+        # Both of these have been Terminating for 2y+; backing them up only
+        # produces errors.
+        - longhorn-system
+        - signoz
