@@ -1,12 +1,38 @@
 # k3s Homelab Cluster Upgrade — Design
 
-**Date:** 2026-09-12
+**Date:** 2026-09-12, revised 2026-09-13 after Phase A
 **Cluster:** `local-k3s` (kubectl context), 4 VMs on Proxmox host `pve` (192.168.5.1)
 **Scope approved:** Phases 0-4. Phase 5+ (Kubernetes minor hops) deferred pending reassessment.
 
 > **Always pass `--context local-k3s` explicitly.** The kubeconfig contains 8 contexts
 > including `aws-truelist-prod` and `production`, and `current-context` has previously
 > pointed at a remote production cluster.
+
+## Status: Phase A complete, Phase B not started
+
+Execution was split in two:
+
+| | What | State |
+|---|---|---|
+| **Phase A** | Author the **file artifacts** — snapshot tool, k3s config, Helm values, docs | **Done.** 21 commits, reviewed, zero cluster mutation |
+| **Phase B** | Execute the **live cluster operations** using those artifacts | **Not started** |
+
+The split exists because the review mechanism for Phase A work is `git diff`, and
+that mechanism is blind to the thing that actually carries risk in Phase B. Task 6's
+diff is a 12-line config file; its *effect* is restarting the API server and deleting
+5 DaemonSets. Reviewing the diff verifies almost nothing about the risk.
+
+**If you are picking this up cold:** the executable document is
+`../plans/2026-09-13-k3s-cluster-upgrade-phases-0-4.md`. It is current and has been
+reconciled against what Phase A actually committed. This spec is the *why*; the plan
+is the *how*. Read "Decisions Already Made" at the bottom of this file before changing
+anything — several things that look like defects are deliberate, and several things
+that look correct are load-bearing for non-obvious reasons.
+
+**These artifacts already exist and are committed. Do not re-author them:**
+`proxmox/snapshot-cluster.sh`, `proxmox/README.md`, `k3s/config.yaml`, `k3s/README.md`,
+`velero/values.yml`, `tailscale/values.yml`, `tailscale/README.md`, `metallb/README.md`,
+`cert-manager/install-crd.sh`, `cert-manager/README.md`.
 
 ---
 
@@ -54,20 +80,44 @@ Proxmox VMs backed by ZFS, which gives something much stronger:
 | k3s state (SQLite), all 23 `local-path` PVCs | VM zvols in `main-pool` | `qm snapshot <vmid>` |
 | All 15 `nfs` PVCs | `main-pool/k3s-nfs` | `zfs snapshot main-pool/k3s-nfs@...` |
 
+Phase A wrapped both into **`proxmox/snapshot-cluster.sh`**, which treats all five
+targets as one unit — see `proxmox/README.md`. Use it rather than raw `qm`/`zfs`:
+a partial snapshot set is worse than none, because it leaves the cluster split across
+two points in time. The script refuses to create a set unless every pool is healthy
+and `qemu-guest-agent` answers on all 4 VMs, refuses a label already in use, and
+before rolling back verifies the label exists on all five targets *and* that all 4 VMs
+actually stopped.
+
+Labels accept `[A-Za-z0-9_-]` only and may not begin with `-`. **Dots are rejected**,
+so `pre-k3s-v1.30.5` fails — use `pre-k3s-v1-30-5`.
+
 `main-pool` is at **58% capacity** with **660G available to datasets** (`zpool` reports
 766G `FREE`; the 660G `zfs AVAIL` figure is the conservative one to plan against).
 Snapshots are cheap — copy-on-write, so cost grows only with divergence during the
 upgrade window. Snapshotting all four VMs plus the NFS dataset captures the entire
 cluster state atomically and reverts in minutes.
 
-**Every phase gets its own snapshot gate.** This converts a risky migration into a
-series of individually reversible steps.
+**Most tasks get their own snapshot gate**, which converts a risky migration into a
+series of individually reversible steps. Three exceptions, all deliberate:
 
-**Prerequisite:** VMs have **no `qemu-guest-agent`**, so snapshots would be
-crash-consistent only, and two VMs (102/103) already ignored ACPI shutdown and needed
-hard stops. Installing the agent is required before relying on snapshots.
+- **Task 1 cannot be gated.** `snapshot-cluster.sh create` requires the
+  `qemu-guest-agent` that Task 1 installs. This is circular and unfixable, so Task 1
+  does the minimum (install a package, power-cycle) and Task 2 immediately proves the
+  net works. **This is the largest residual risk in Phase B.**
+- **Tasks 4, 5 and 7 have no gate and need none.** 4 and 5 are confined to Helm
+  releases that `helm rollback` restores; 7 is read-only investigation.
+- **Tasks 3, 6 and 12 are the only ones a snapshot is the *sole* route back from.**
+  `lvextend` cannot shrink, and k3s does not support in-place downgrade.
 
-**The rollback procedure must itself be tested in Phase 0**, before it is depended on.
+**Prerequisite:** VMs have **no `qemu-guest-agent`** (still true — Phase B Task 1
+installs it), so snapshots would be crash-consistent only, and two VMs (102/103)
+already ignored ACPI shutdown and needed hard stops.
+
+**The rollback procedure must itself be tested before it is depended on** — Phase B
+Task 2 writes canary files to both a VM disk and the NFS dataset, rolls back, and
+proves both vanish. If either survives, stop the entire plan. `snapshot-cluster.sh`
+has **never been run against real infrastructure**; treat Task 1 Step 6 and Task 2 as
+tests of the script, not of the cluster.
 
 ---
 
@@ -163,6 +213,49 @@ Direct probe of served groups: `policy/v1beta1`, `extensions/v1beta1`,
 apiserver-internal (APF) and self-migrates.
 
 **Action:** re-sample the metric after ≥7 days of uptime before Phase 5.
+
+### Defects found during Phase A — do not reintroduce these
+
+Five real defects were caught while authoring the artifacts. Each was verified against
+primary sources, not inferred. They are listed because the shape of each is easy to
+recreate.
+
+**1. `get.k3s.io` decides server-vs-agent from the environment, not from disk.**
+`install.sh:178` is `if [ -z "${K3S_URL}" ]; then CMD_K3S=server`, and
+`grep -n "k3s-agent" install.sh` returns **nothing** — the installer has no awareness
+of the agent unit. Running a bare `curl … | INSTALL_K3S_VERSION=… sh -` on a worker
+installs a **k3s server** beside the untouched agent and swaps the binary underneath
+it, so the agent never actually upgrades. `create_env_file()` (`:1031`) also writes
+with `tee` and no `-a`, i.e. it truncates and rewrites from the current environment
+rather than reading the existing file. **Every agent upgrade must pass `K3S_URL` and
+`K3S_TOKEN` explicitly** (token: `/var/lib/rancher/k3s/server/node-token` on the
+controller). The correct form was already in this repo's top-level `README.md:25`.
+
+**2. Helm prunes the `operator-oauth` Secret when the Tailscale oauth values are omitted.**
+The Secret is release-owned (`app.kubernetes.io/managed-by: Helm`) and the chart gates
+it on `.Values.oauth.clientId`. Rendering with oauth unset drops it from the manifest,
+and Helm deletes resources that disappear between manifests. `tailscale/values.yml`
+deliberately omits the credential, so **the Secret must be annotated
+`helm.sh/resource-policy=keep` before the first upgrade with those values** or the
+credential is destroyed — including a freshly rotated one.
+
+**3. cert-manager's CRD protection is not what it looks like.** With
+`crds.enabled=false` the chart renders no CRDs, so `crds.keep=true` has nothing to
+annotate — **it is inert.** What actually protects them is that the chart never manages
+them, plus the released `cert-manager.crds.yaml` carrying `helm.sh/resource-policy: keep`
+on all 6 CRDs. Verify the annotation is present before upgrading; CRD deletion cascades
+to every Certificate, Issuer, Order and Challenge in the cluster.
+
+**4. Piping *and* redirecting into the same `ssh` is zsh-only.** Under `bash`/`sh` the
+redirect wins and the piped sudo password is silently discarded. Combined with a
+`2>/dev/null` this fails **silently**. Feed both down one stream instead:
+`{ printf '%s\n' "$PW"; cat file; } | ssh … 'sudo -S -p "" tee …'`.
+
+**5. `cmd || echo "<success-sounding message>"` hides failures.** A command whose
+failure is indistinguishable from the desired outcome will self-certify. This bit the
+rollback proof: if the canaries were never written, the post-rollback check prints
+"canary gone" and passes. Gate such checks behind an explicit liveness assertion that
+hard-fails.
 
 ### Other blockers and hazards
 
@@ -261,6 +354,68 @@ Open question for that phase: continue in-place, or rebuild at v1.36 with correc
 defaults (etcd instead of SQLite, `--disable=servicelb`, possibly HA control plane).
 A rebuild avoids 7 hops of deprecation archaeology but requires migrating 38 PVCs,
 and Velero covers only 5 namespaces today.
+
+---
+
+## Decisions Already Made
+
+Distilled from the Phase A execution ledger. Read this before changing anything —
+several things that look like defects are deliberate, and several that look
+incidental are load-bearing.
+
+### Deliberately left as-is — do not "fix" these
+
+| Thing | Why it stays |
+|---|---|
+| `snapshot-cluster.sh create` is non-atomic on mid-loop failure | Fails loudly; the *next* `create` names the stale targets and directs you to `delete`. Bounded. |
+| `rollback` surveys all five targets *before* the confirm prompt | Leaves a human-time TOCTOU window, accepted deliberately: never ask an operator to confirm an operation that cannot complete. Single operator, homelab. |
+| Both `create`-path ABORTs write to stdout, other aborts use `>&2` | Preserves original behaviour; Task 0 Step 4's expectation reads from stdout. Normalise stream hygiene across the whole script or not at all. |
+| `sleep 45` after starting the control plane instead of polling | The Proxmox host has no kubectl; node readiness is verified separately downstream with a real check. |
+| `crds.enabled=false` / `crds.keep=true` although both are already chart defaults | Documents intent and survives a future default change. |
+| `K3S_TOKEN=` passed on the installer command line (visible in the worker's `ps` argv) | The token already lives on that node in `k3s-agent.service.env`; exposure is seconds. The alternative is an untested `sudo -S` stdin construct in a production upgrade step — the larger risk. |
+| `velero/values.yml` omits `includeClusterResources` | A non-empty `excludedNamespaces` keeps Velero's auto-rule false regardless, so CRDs/ClusterRoles/StorageClasses/ClusterIssuers stay unbacked-up. **No regression** — identical to the previous allow-list — but "coverage is the default" is not yet true cluster-wide. Setting it to `true` is a separate decision needing a version check. |
+
+### Load-bearing for non-obvious reasons — do not simplify
+
+- **`local id snaps` declared separately from `snaps=$(...)`** in `snapshot-cluster.sh`.
+  `local s=$(false)` returns status 0; the split form returns 1. Inline this and every
+  SSH failure is silently swallowed, making an unreachable target look like "label
+  absent" — which would defeat the pre-flight entirely.
+- **Dash-only snapshot labels.** The charset check rejects dots, so every label in the
+  plan is dash-separated on purpose, not stylistically.
+- **`cert-manager/install-crd.sh` pins the final v1.21.2.** Running it during the
+  deliberate intermediate stop at v1.17.2 (Task 10) would jump straight to the end and
+  defeat the bisect. Task 10 uses explicit inline commands for that reason.
+- **Task 7 is the only task in the plan that writes a repo file**
+  (`cert-manager/README.md`). Task 11's verification accounts for that; other tasks'
+  `Files:` lines all read `none`.
+
+### Open questions — for the human, not the executing agent
+
+- **Velero backups now carry Secrets into S3 with no encryption configured.** Widening
+  to ~25 namespaces sweeps cert-manager's ACME account key and every TLS private key,
+  `infra` registry credentials, `truelist-staging` DB credentials, and the Tailscale
+  OAuth secret into `s3://gammons-velero-homelab`, whose
+  `backupStorageLocation[0].config` sets only `region` — no `serverSideEncryption`, no
+  `kmsKeyId`. **This must be answered before Task 4 Step 5**, which *is* the first
+  widened backup.
+- **That first widened backup will likely exceed Task 4's own 60-minute rollback
+  trigger.** Newly in scope: harbor ~107Gi, tv-channel 75Gi, monitoring's 50Gi
+  Prometheus TSDB, elk 20G. Filesystem-backing a live TSDB or Elasticsearch data
+  directory is also unlikely to restore cleanly. Prefer excluding those *volumes*
+  (`backup.velero.io/backup-volumes-excludes`) over excluding the namespaces.
+- **The Tailscale OAuth client secret was exposed in a terminal session on 2026-09-13**
+  and must be rotated. Task 8 Step 2 performs the rotation.
+
+### Known-broken, pre-existing, out of scope
+
+- `truelist-staging/truelist-stag-io-cert` has been `READY=False` for 171 days with a
+  stuck ACME solver. Task 7 diagnoses and documents it; fixing it is a separate
+  decision (likely DNS-01, or deleting the Certificate).
+- `signoz` and `longhorn-system` have been `Terminating` for 2y+. Excluded from Velero
+  for that reason. Leftover Longhorn CRDs also shadow the short name `backup`, so
+  **always fully-qualify `backups.velero.io`**.
+- `~/sudo-pw.txt` is a plaintext password on disk, used throughout the plan.
 
 ---
 
