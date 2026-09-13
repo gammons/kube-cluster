@@ -659,16 +659,28 @@ node-taint:
 
 - [ ] **Step 4: Install it on the controller and restart k3s**
 
+stderr is deliberately **not** suppressed anywhere here. Each of these four must
+succeed, and `sudo -S` reports an auth failure only on stderr — hiding it would
+let the config silently not install while the next step carried on regardless.
+The `tee` line feeds the password and the file down a single stdin stream: a pipe
+and a `< file` both target ssh's stdin, and under bash/sh the redirect wins, so
+`sudo -S` would read `# Declarative k3s server config...` as the password. (zsh's
+`MULTIOS` concatenates them and happens to work, which is what made this hard to
+spot.)
+
 ```sh
 PW=$(tr -d '\n' < ~/sudo-pw.txt)
-printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller 'sudo -S -p "" mkdir -p /etc/rancher/k3s' 2>/dev/null
-printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller \
-  "sudo -S -p '' tee /etc/rancher/k3s/config.yaml >/dev/null" 2>/dev/null < k3s/config.yaml
-printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller 'sudo -S -p "" cat /etc/rancher/k3s/config.yaml' 2>/dev/null
-printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller 'sudo -S -p "" systemctl restart k3s' 2>/dev/null
+printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller 'sudo -S -p "" mkdir -p /etc/rancher/k3s'
+{ printf '%s\n' "$PW"; cat k3s/config.yaml; } | \
+  ssh -o BatchMode=yes grant@k3s-controller 'sudo -S -p "" tee /etc/rancher/k3s/config.yaml >/dev/null'
+printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller 'sudo -S -p "" cat /etc/rancher/k3s/config.yaml'
+printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller 'sudo -S -p "" systemctl restart k3s'
 ```
 
-Expected: the file echoes back correctly, then a brief API outage (~30-60s) while k3s restarts.
+Expected: no `sudo`/`ssh` errors on stderr, the file echoes back correctly (all 14
+lines, starting `# Declarative k3s server config`), then a brief API outage
+(~30-60s) while k3s restarts. A `Sorry, try again` or `incorrect password` means
+the config was **not** written — stop, do not proceed to Step 5.
 
 - [ ] **Step 5: Wait for the API and verify svclb is gone**
 
