@@ -18,13 +18,21 @@ set -euo pipefail
 PVE=root@192.168.5.1
 VMS="100 101 102 103"
 DATASET=main-pool/k3s-nfs
+STOP_WAIT=60            # seconds to wait for VMs to actually reach 'stopped'
 ACTION=${1:-}
 LABEL=${2:-}
 
 usage() { echo "usage: $0 {create|list|rollback|delete} <label>" >&2; exit 2; }
 [ -n "$ACTION" ] || usage
 case "$ACTION" in list) ;; *) [ -n "$LABEL" ] || usage ;; esac
-case "$LABEL" in *[!a-zA-Z0-9_-]*) echo "label must be [a-zA-Z0-9_-]" >&2; exit 2 ;; esac
+# The label is interpolated into remote shell commands, and into argv positions
+# where a leading '-' would be read as an option ("qm snapshot 100 -foo ...").
+# Proxmox itself requires ^[A-Za-z][A-Za-z0-9_-]+$, so a leading '-' can only
+# ever fail -- reject it here, with a message that says why.
+case "$LABEL" in
+  *[!a-zA-Z0-9_-]*) echo "label must be [a-zA-Z0-9_-]" >&2; exit 2 ;;
+  -*) echo "label must not start with '-' (it would be parsed as an option)" >&2; exit 2 ;;
+esac
 
 r() { ssh -o BatchMode=yes "$PVE" "$@"; }
 
@@ -44,6 +52,13 @@ vm_snapshots() {
 dataset_snapshots() {
   r "zfs list -t snapshot -H -o name -r ${DATASET}" \
     | sed -n "s|^${DATASET}@||p"
+}
+
+# Power state of VM $1, e.g. "stopped" or "running". qm status prints one line,
+# "status: stopped". No 'exit' in the awk: it must drain stdin so it can never
+# SIGPIPE the ssh upstream, which under pipefail would look like a query error.
+vm_status() {
+  r "qm status $1" | awk '/^status:/ { print $2 }'
 }
 
 # True if the newline-separated list $1 contains exactly $2. Whole-line match on
@@ -121,9 +136,58 @@ case "$ACTION" in
     echo "!! VMs will be stopped, rolled back, and restarted."
     printf "type the label again to confirm: "; read -r c
     [ "$c" = "$LABEL" ] || { echo "aborted"; exit 1; }
+    echo "== stopping VMs =="
     for id in $VMS; do r "qm stop $id --timeout 120" || true; done
-    for id in $VMS; do echo "-- rollback VM $id"; r "qm rollback $id $LABEL"; done
-    r "zfs rollback -r ${DATASET}@${LABEL}"
+    # The stop loop tolerates failures, so do not trust it. qm rollback against a
+    # running VM fails (these snapshots carry no vmstate), which would abort the
+    # rollback loop part way and produce exactly the split state the pre-flight
+    # above exists to prevent. Verify, with an explicit bound.
+    echo "-- confirming all VMs are stopped (up to ${STOP_WAIT}s)"
+    waited=0
+    while :; do
+      RUNNING=""
+      for id in $VMS; do
+        state=$(vm_status "$id") \
+          || { echo "ABORT: cannot read status of VM $id; nothing rolled back" >&2; exit 1; }
+        [ "$state" = "stopped" ] || RUNNING="$RUNNING vm$id(${state:-unknown})"
+      done
+      [ -n "$RUNNING" ] || break
+      [ "$waited" -lt "$STOP_WAIT" ] || {
+        echo "ABORT: still not stopped after ${STOP_WAIT}s:$RUNNING" >&2
+        echo "       Nothing has been rolled back. Stop those VMs by hand, then" >&2
+        echo "       re-run; rolling back a running VM fails mid-set." >&2
+        exit 1
+      }
+      sleep 3
+      waited=$((waited + 3))
+    done
+    echo "OK: all 4 VMs stopped"
+    echo "== rolling back =="
+    ROLLED=""
+    for id in $VMS; do
+      echo "-- rollback VM $id"
+      r "qm rollback $id $LABEL" || {
+        NOTROLLED=""
+        for j in $VMS; do
+          case " $ROLLED " in *" vm$j "*) ;; *) NOTROLLED="$NOTROLLED vm$j" ;; esac
+        done
+        echo "FAILED: rollback of VM $id failed. Actual state right now:" >&2
+        echo "        rolled back:${ROLLED:- none}" >&2
+        echo "        NOT rolled back:$NOTROLLED" >&2
+        echo "        ${DATASET}: NOT rolled back" >&2
+        echo "        all 4 VMs: stopped" >&2
+        echo "        Recovery: fix VM $id, then re-run rollback '$LABEL'. The" >&2
+        echo "        snapshots still exist and rolling a VM back twice is harmless." >&2
+        exit 1
+      }
+      ROLLED="$ROLLED vm$id"
+    done
+    r "zfs rollback -r ${DATASET}@${LABEL}" || {
+      echo "FAILED: all 4 VMs rolled back but ${DATASET} did NOT." >&2
+      echo "        The nfs PVCs are still newer than the VMs. Leave the VMs stopped," >&2
+      echo "        and re-run rollback '$LABEL' once the dataset can be rolled back." >&2
+      exit 1
+    }
     r "systemctl restart nfs-server"
     echo "-- starting controller first"
     r "qm start 100"; sleep 45
