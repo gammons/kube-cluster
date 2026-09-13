@@ -687,7 +687,9 @@ Expected: no `git status` output, then `OK: snapshot set 'pre-servicelb' deleted
 
 `truelist-staging/truelist-stag-io-cert` has been `READY=False` for 171 days with a live `cm-acme-http-solver-sqcfr` pod. Diagnose **before** upgrading cert-manager so a pre-existing failure is not mistaken for upgrade fallout.
 
-**Files:** none (investigation; fix may be a follow-up)
+**Files:** Modify `cert-manager/README.md` (Step 4 — the only repo file this plan
+still writes; every other task verifies already-committed artifacts). The
+*certificate* fix, if any, is a follow-up — this task only records the finding.
 
 - [ ] **Step 1: Capture the failure reason**
 
@@ -1184,20 +1186,32 @@ Expected: same 4 `True`.
 
 `cert-manager/install-crd.sh` and `cert-manager/README.md` were both updated and
 committed in Phase A (`3f1ae20`). **Do not rewrite either.** Confirm they are
-present, unmodified, and consistent with what Step 3 just applied:
+present, unmodified, and consistent with what Step 3 just applied. Check their
+histories **separately** — the two diverge from here on, and `git log -1` over a
+combined pathspec reports only whichever was touched most recently, hiding the
+other:
 
 ```sh
 git status --porcelain -- cert-manager/install-crd.sh cert-manager/README.md
-git log --oneline -1 -- cert-manager/install-crd.sh cert-manager/README.md
+git log --oneline -1 -- cert-manager/install-crd.sh
+git log --oneline -1 -- cert-manager/README.md
 grep -n "v1\.21\.2\|crds\.enabled\|crds\.keep" cert-manager/install-crd.sh
 grep -n "v1\.21\.2\|install-crd.sh" cert-manager/README.md
 ```
 
-Expected: no `git status` output, most recent commit `3f1ae20`, the script
-pinning `v1.21.2` with `crds.enabled=false` and `crds.keep=true`, and the README
-attributing that version to `install-crd.sh` rather than asserting what is live
-in the cluster. That distinction is deliberate — prose that claims a running
-version goes stale silently. If you want the cluster's actual version, read it:
+Expected: no `git status` output. For `install-crd.sh`, most recent commit
+`3f1ae20`. For `README.md`, `3f1ae20` **or** the Task 7 Step 5 commit that
+recorded the known-failing certificate — Task 7 runs before this task and
+legitimately appends a "Known issues" section to this file, so a newer commit
+here is correct, not a problem. **Do not halt on it**; the cert-manager upgrade
+in Step 3 has already been applied by this point, and stopping on a false alarm
+leaves it half-verified.
+
+Also expected: the script pinning `v1.21.2` with `crds.enabled=false` and
+`crds.keep=true`, and the README attributing that version to `install-crd.sh`
+rather than asserting what is live in the cluster. That distinction is
+deliberate — prose that claims a running version goes stale silently. If you want
+the cluster's actual version, read it:
 
 ```sh
 kubectl --context local-k3s get deploy cert-manager -n cert-manager \
