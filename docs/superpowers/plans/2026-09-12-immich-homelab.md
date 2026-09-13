@@ -1169,7 +1169,12 @@ spec:
             - /bin/sh
             - -c
             - |
-              set -euo pipefail
+              # NOTE: rclone/rclone is Alpine-based, so /bin/sh is busybox ash,
+              # NOT bash. Do NOT add `pipefail` here — Task 6 proved that
+              # `set -o pipefail` under a non-bash /bin/sh aborts the script on
+              # line 1 as a special-builtin failure. There are no pipes in this
+              # script, so `set -eu` is sufficient and correct.
+              set -eu
               rclone --config /cfg/rclone.conf copy \
                 gdrive:Takeout /takeout \
                 --transfers 4 --checkers 8 \
