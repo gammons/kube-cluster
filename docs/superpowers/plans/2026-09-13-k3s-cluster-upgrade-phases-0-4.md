@@ -711,9 +711,11 @@ Single server (`k3s-controller`) with the default **SQLite** datastore — there
 no etcd, so there is no `etcd-snapshot` tooling. Backups come from Proxmox VM
 snapshots; see `../proxmox/README.md`.
 
-Agents join using `K3S_URL`/`K3S_TOKEN` persisted in
-`/etc/systemd/system/k3s-agent.service.env`, so re-running the install script
-during an upgrade preserves their join config.
+Agents join using `K3S_URL`/`K3S_TOKEN` in
+`/etc/systemd/system/k3s-agent.service.env`, but the installer never reads that
+file — it picks server vs agent from the environment and rewrites the env file
+from scratch. Both variables must therefore be supplied explicitly on every agent
+upgrade; see [Upgrading](#upgrading).
 
 ## config.yaml
 
@@ -721,10 +723,17 @@ during an upgrade preserves their join config.
 It is declarative and survives reinstalls, unlike the `ExecStart` line the
 install script bakes into the systemd unit.
 
+Run from the repo root on your workstation — the controller needs no checkout:
+
 ```sh
-sudo tee /etc/rancher/k3s/config.yaml < config.yaml
-sudo systemctl restart k3s     # ~30-60s API outage
+ssh grant@k3s-controller 'sudo mkdir -p /etc/rancher/k3s'
+ssh grant@k3s-controller 'sudo tee /etc/rancher/k3s/config.yaml >/dev/null' < k3s/config.yaml
+ssh grant@k3s-controller 'sudo systemctl restart k3s'   # ~30-60s API outage
 ```
+
+`sudo` prompts for a password on these nodes, and the `tee` line's stdin is
+already the config file, so it cannot also carry one. Authenticate sudo in an
+interactive session first, or `scp` the file to a temp path and `sudo install` it.
 
 ## Upgrading
 
@@ -734,9 +743,18 @@ Controller first, then agents.
 ```sh
 # controller
 curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=vX.Y.Z+k3sN sh -
-# agents (join config is preserved from k3s-agent.service.env)
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=vX.Y.Z+k3sN sh -
+# agents -- K3S_URL and K3S_TOKEN are REQUIRED. The installer picks server vs
+# agent from the environment, not from what is already installed, and rewrites
+# k3s-agent.service.env from scratch. Omitting them installs a SERVER here.
+curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=vX.Y.Z+k3sN \
+  K3S_URL=https://k3s-controller:6443 K3S_TOKEN=<token> sh -
 ```
+
+`<token>` lives on the controller at `/var/lib/rancher/k3s/server/node-token`
+(`sudo cat` it). Omitting it on a worker does not fail loudly: the installer
+derives the unit name from the mode it picked, so it installs, enables and starts
+a second `k3s.service` in **server** mode alongside the untouched
+`k3s-agent.service` — which is never restarted, so the agent is not upgraded.
 
 Always snapshot first: `../proxmox/snapshot-cluster.sh create pre-k3s-vX-Y-Z`.
 ```
@@ -1350,13 +1368,24 @@ Expected: `k3s-controller` at `v1.29.15+k3s1`, workers still `v1.29.4+k3s1` (exp
 
 Workloads on `local-path` PVCs cannot reschedule elsewhere — they stay down until their node returns. This is expected, not a fault.
 
+`K3S_URL` and `K3S_TOKEN` are **required** on every agent. The installer chooses
+server vs agent from the environment alone — it has no awareness of the existing
+`k3s-agent.service` — and rewrites `k3s-agent.service.env` from scratch rather
+than reading it. Omitting them installs a second k3s in **server** mode on the
+worker and never restarts the agent, so the node is not upgraded.
+
 ```sh
 PW=$(tr -d '\n' < ~/sudo-pw.txt)
+TOKEN=$(printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller \
+  'sudo -S -p "" cat /var/lib/rancher/k3s/server/node-token' 2>/dev/null | tr -d '\n')
+echo "node-token: ${#TOKEN} chars"     # length only -- never print the token
+[ -n "$TOKEN" ] || echo "ABORT: no node-token; do not continue"
 for h in k3s-node-1 k3s-node-2 k3s-node-3; do
+  [ -n "$TOKEN" ] || break
   echo "===== $h"
   kubectl --context local-k3s drain $h --ignore-daemonsets --delete-emptydir-data --timeout=300s || true
   printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@$h \
-    'sudo -S -p "" sh -c "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.29.15+k3s1 sh -"' 2>/dev/null | tail -3
+    "sudo -S -p '' sh -c 'curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.29.15+k3s1 K3S_URL=https://k3s-controller:6443 K3S_TOKEN=$TOKEN sh -'" 2>/dev/null | tail -3
   sleep 45
   kubectl --context local-k3s uncordon $h
   for i in $(seq 1 18); do
@@ -1369,7 +1398,7 @@ for h in k3s-node-1 k3s-node-2 k3s-node-3; do
 done
 ```
 
-Expected: each node reaches `v1.29.15+k3s1` and `ready=True` before the loop moves on. **If a node does not, stop — do not drain the next one.**
+Expected: `node-token: <N> chars` with N greater than 0 before anything is drained — if it is `0`, the token read failed and the loop must not run. Then each node reaches `v1.29.15+k3s1` and `ready=True` before the loop moves on. **If a node does not, stop — do not drain the next one.** Each installer run should report `systemd: Starting k3s-agent`; `systemd: Starting k3s` would mean a server was installed on a worker — stop and roll back.
 
 - [ ] **Step 6: Full verification against the Task 0 baseline — acceptance test**
 
@@ -1405,8 +1434,10 @@ Patch-level only, so no API changes. Validates the upgrade mechanism -- binary
 swap via the install script, systemd restart, and drain/uncordon ordering --
 before attempting any minor version hop.
 
-Agents keep their join config because K3S_URL and K3S_TOKEN persist in
-k3s-agent.service.env, so the install script does not need them re-supplied." \
+Agents must have K3S_URL and K3S_TOKEN re-supplied on every install. The script
+picks server vs agent from the environment and rewrites k3s-agent.service.env
+from scratch rather than reading it, so running it bare on a worker would install
+a second k3s in server mode and leave the agent unrestarted." \
   -- k3s/README.md
 
 ./proxmox/snapshot-cluster.sh delete pre-k3s-1-29-15
