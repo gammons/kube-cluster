@@ -428,6 +428,30 @@ All values keys below were verified by rendering chart 0.13.2 — `server.servic
 
 - [ ] **Step 1: Create `immich/values.yml`**
 
+> **THIS SNIPPET IS NO LONGER AUTHORITATIVE. `immich/values.yml` in the repo is.**
+>
+> This block records what Task 4 originally created. Later waves added, and the
+> deployed file now contains, things this snippet does not:
+> - `valkey.resources` (spec's resource table; without it valkey runs BestEffort
+>   and is first OOM-killed while holding the job queue)
+> - `machineLearning.ocr` and `machineLearning.duplicateDetection` set false
+>   (Immich v3.2.0 defaults both to true — CPU inference on a GPU-less cluster)
+> - `backup.database.enabled: false` (Immich's built-in 02:00 dump otherwise
+>   writes to the Velero-excluded library volume, creating an unmonitored
+>   recovery path)
+> - `job.thumbnailGeneration.concurrency: 1` and
+>   `integrityChecks.checksumFiles.enabled: false` (the library sits on an SMR
+>   drive; the nightly full-library checksum never finishes)
+>
+> Rebuilding from this snippet alone produces a materially worse deployment.
+> Copy the repo file instead.
+>
+> Also note: chart 0.13.2 puts **no config checksum on the pod template**, so
+> `helm upgrade` does NOT restart the server when only `immich.configuration`
+> changes. The process keeps running the old config while the ConfigMap shows
+> the new one. Always follow a config-only change with
+> `kubectl --context local-k3s rollout restart deploy/immich-server -n immich`.
+
 ```yaml
 ---
 # Shared across every Immich component.
