@@ -1,0 +1,110 @@
+---
+# Shared across every Immich component.
+defaultPodOptions:
+  dnsConfig:
+    options:
+      # Cluster search list is "... lan rya-scala.ts.net" with ndots:5, which
+      # triggers the musl/Alpine resolution bug Immich documents. Internal
+      # references below are fully qualified; this fixes external lookups.
+      - name: ndots
+        value: "1"
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              # k3s-node-2 is at 83% memory requests / 216% memory limits.
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values: ["k3s-node-2"]
+
+controllers:
+  main:
+    containers:
+      main:
+        image:
+          tag: v3.2.0
+        env:
+          REDIS_HOSTNAME: immich-valkey.immich.svc.cluster.local
+          IMMICH_MACHINE_LEARNING_URL: http://immich-machine-learning.immich.svc.cluster.local:3003
+          DB_HOSTNAME: immich-postgres.immich.svc.cluster.local
+          DB_PORT: "5432"
+          DB_DATABASE_NAME: immich
+          DB_USERNAME:
+            valueFrom:
+              secretKeyRef:
+                name: immich-postgres
+                key: POSTGRES_USER
+          DB_PASSWORD:
+            valueFrom:
+              secretKeyRef:
+                name: immich-postgres
+                key: POSTGRES_PASSWORD
+
+immich:
+  metrics:
+    enabled: true
+  persistence:
+    library:
+      existingClaim: immich-library
+  configuration:
+    storageTemplate:
+      enabled: true
+      hashVerificationEnabled: true
+      template: "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"
+    machineLearning:
+      # Disabled for the bulk import; re-enabled in Task 11.
+      clip:
+        enabled: false
+      facialRecognition:
+        enabled: false
+
+valkey:
+  enabled: true
+  persistence:
+    data:
+      enabled: true
+      type: persistentVolumeClaim
+      existingClaim: immich-valkey-data
+
+server:
+  service:
+    main:
+      annotations:
+        tailscale.com/expose: "true"
+        tailscale.com/hostname: "immich"
+  controllers:
+    main:
+      pod:
+        annotations:
+          backup.velero.io/backup-volumes-excludes: data
+      containers:
+        main:
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 6Gi
+
+machine-learning:
+  controllers:
+    main:
+      pod:
+        annotations:
+          backup.velero.io/backup-volumes-excludes: cache
+      containers:
+        main:
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              cpu: "4"
+              memory: 8Gi
+  persistence:
+    cache:
+      enabled: true
+      type: persistentVolumeClaim
+      existingClaim: immich-ml-cache
