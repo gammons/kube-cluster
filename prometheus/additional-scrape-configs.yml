@@ -1,0 +1,209 @@
+# Production cluster metrics via Tailscale egress
+- job_name: 'production-truelist-prometheus-exporter'
+  static_configs:
+    - targets:
+      - 'production-truelist-app.monitoring.svc.cluster.local:9394'
+      labels:
+        cluster: 'production'
+        environment: 'prod'
+        service: 'truelist-app'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+- job_name: 'production-redis-main'
+  static_configs:
+    - targets:
+      - 'production-redis-main.monitoring.svc.cluster.local:9121'
+      labels:
+        cluster: 'production'
+        environment: 'prod'
+        service: 'redis-main'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+- job_name: 'production-redis-cache'
+  static_configs:
+    - targets:
+      - 'production-redis-cache.monitoring.svc.cluster.local:9121'
+      labels:
+        cluster: 'production'
+        environment: 'prod'
+        service: 'redis-cache'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+- job_name: 'production-kube-state-metrics'
+  static_configs:
+    - targets:
+      - 'production-kube-state-metrics.monitoring.svc.cluster.local:8080'
+      labels:
+        cluster: 'production'
+        environment: 'prod'
+        service: 'kube-state-metrics'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+# OVH Cluster metrics via Tailscale egress
+- job_name: 'ovh-kube-state-metrics'
+  static_configs:
+    - targets:
+      - 'ovh-kube-state-metrics.monitoring.svc.cluster.local:8080'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'kube-state-metrics'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+# OVH Cluster - Per-node exporters for individual node monitoring
+# All production nodes consolidated into single job
+- job_name: 'ovh-node-exporter'
+  static_configs:
+    - targets:
+      - 'ovh-node-2-exporter.monitoring.svc.cluster.local:9100'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'node-exporter'
+        node: 'talos-node-2'
+        role: 'control-plane'
+    - targets:
+      - 'ovh-node-4-exporter.monitoring.svc.cluster.local:9100'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'node-exporter'
+        node: 'talos-node-4'
+        role: 'worker'
+    - targets:
+      - 'ovh-mysql-primary-new-exporter.monitoring.svc.cluster.local:9100'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'node-exporter'
+        node: 'talos-mysql-primary-new'
+        role: 'control-plane'
+    - targets:
+      - 'ovh-mysql-replica-new-exporter.monitoring.svc.cluster.local:9100'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'node-exporter'
+        node: 'talos-mysql-replica-new'
+        role: 'control-plane'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+# OVH Cluster - MySQL Exporters via Tailscale
+- job_name: 'ovh-mysql-exporter'
+  static_configs:
+    - targets:
+      - 'ovh-mysql-exporter:9104'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'mysql-primary'
+        instance_type: 'replica-of-rds'
+  scrape_interval: 15s
+  metrics_path: /metrics
+
+- job_name: 'ovh-mysql-replica-exporter'
+  static_configs:
+    - targets:
+      - 'ovh-mysql-replica-exporter:9104'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'mysql-replica'
+        instance_type: 'replica-of-ovh-primary'
+        replication_level: 'secondary'
+  scrape_interval: 15s
+  metrics_path: /metrics
+
+# OVH Cluster - Ingress NGINX Controller Metrics
+# Two separate services to ensure both controller pods are scraped
+# (Tailscale proxies maintain sticky connections to one backend)
+- job_name: 'ovh-ingress-nginx-metrics'
+  static_configs:
+    - targets:
+      - 'ovh-ingress-nginx-metrics.monitoring.svc.cluster.local:10254'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'ingress-nginx'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+- job_name: 'ovh-ingress-nginx-metrics-2'
+  static_configs:
+    - targets:
+      - 'ovh-ingress-nginx-metrics-2.monitoring.svc.cluster.local:10254'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'ingress-nginx'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+# OVH Cluster - Redis Exporters
+- job_name: 'ovh-redis-cache-exporter'
+  static_configs:
+    - targets:
+      - 'ovh-redis-cache-exporter.monitoring.svc.cluster.local:9121'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'redis-cache'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+- job_name: 'ovh-redis-sidekiq-exporter'
+  static_configs:
+    - targets:
+      - 'ovh-redis-sidekiq-exporter.monitoring.svc.cluster.local:9121'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'redis-sidekiq'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+# OVH Cluster - Longhorn Storage Metrics
+- job_name: 'ovh-longhorn'
+  static_configs:
+    - targets:
+      - 'ovh-longhorn-backend.monitoring.svc.cluster.local:9500'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'longhorn'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+# OVH Cluster - Kubelet Volume Stats (actual filesystem usage)
+- job_name: 'ovh-kubelet-metrics'
+  static_configs:
+    - targets:
+      - 'ovh-kubelet-metrics.monitoring.svc.cluster.local:9100'
+      labels:
+        cluster: 'ovh'
+        environment: 'prod'
+        service: 'kubelet'
+  scrape_interval: 30s
+  metrics_path: /metrics
+
+# Proxmox hypervisor host (pve) - ZFS pool health, SMART wear, host metrics
+# Added 2026-09-12. zpool_* metrics come from a textfile collector because
+# node_exporter's built-in zfs collector does not expose pool health.
+- job_name: 'proxmox-host'
+  static_configs:
+    - targets:
+      - '192.168.5.1:9100'
+      labels:
+        cluster: 'homelab'
+        environment: 'homelab'
+        service: 'node-exporter'
+        node: 'pve'
+        role: 'hypervisor'
+  scrape_interval: 30s
+  metrics_path: /metrics
