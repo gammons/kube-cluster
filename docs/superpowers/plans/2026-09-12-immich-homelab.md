@@ -590,7 +590,7 @@ kubectl --context local-k3s exec -n immich immich-postgres-0 -- \
   psql -U immich -d immich -c "\dt" | head -30
 ```
 
-Expected: Immich's tables exist (`assets`, `users`, `albums`, and others).
+Expected: Immich's tables exist. v3.2.0 names them in the singular after the `StandardizeNames` migration — `asset`, `album`, `user`, and others — not the pre-v3 plurals.
 
 - [ ] **Step 6: Verify the API responds in-cluster**
 
@@ -1387,10 +1387,12 @@ This runs for many hours. There is no `activeDeadlineSeconds`, so it will not be
 ```bash
 kubectl --context local-k3s wait --for=condition=complete job/immich-go-import -n immich --timeout=172800s
 kubectl --context local-k3s exec -n immich immich-postgres-0 -- \
-  psql -U immich -d immich -c "SELECT count(*) FROM assets;"
+  psql -U immich -d immich -c "SELECT count(*) FROM asset;"
 kubectl --context local-k3s exec -n immich immich-postgres-0 -- \
-  psql -U immich -d immich -c "SELECT count(*) FROM albums;"
+  psql -U immich -d immich -c "SELECT count(*) FROM album;"
 ```
+
+Table names are singular in v3.2.0 (`StandardizeNames` migration); `assets`/`albums` do not exist. `user` is a reserved word and must be quoted as `public."user"` if you query it.
 
 Expected: the asset count is close to the dry-run figure, and the album count is non-zero — a zero album count means the `.json` sidecars were not parsed, which defeats the purpose of using immich-go.
 
@@ -1406,8 +1408,10 @@ If dates are all "today", stop — the sidecars were not read, and the fix is th
 - [ ] **Step 7: Verify library files landed on the bulk pool**
 
 ```bash
-kubectl --context local-k3s exec -n immich deploy/immich-server -- du -sh /usr/src/app/upload
+kubectl --context local-k3s exec -n immich deploy/immich-server -- du -sh /data
 ```
+
+The library mounts at `/data` in v3.2.0 — `/usr/src/app/upload` does not exist in this image.
 
 Expected: a size on the order of the Takeout total.
 
@@ -1433,7 +1437,7 @@ Because `IMMICH_CONFIG_FILE` is set, these settings are **read-only in the admin
 
 - [ ] **Step 1: Modify `immich/values.yml`**
 
-Under `immich.configuration.machineLearning`, change both flags to `true` and drop the now-stale comment:
+Under `immich.configuration.machineLearning`, change the flags to `true` and drop the now-stale comment. **Four** flags were disabled for the import, not two:
 
 ```yaml
     machineLearning:
@@ -1441,7 +1445,15 @@ Under `immich.configuration.machineLearning`, change both flags to `true` and dr
         enabled: true
       facialRecognition:
         enabled: true
+      duplicateDetection:
+        enabled: true
+      ocr:
+        enabled: false
 ```
+
+`duplicateDetection` is cheap once CLIP embeddings exist — it reuses them — so re-enable it. **`ocr` is a deliberate decision, not an oversight:** it runs a separate CPU-only inference pass over every asset on a cluster with no GPU, and it is the one ML task whose output most people never search. Leave it `false` unless you specifically want text-in-image search, and if you do, enable it *after* Smart Search and Face Detection have drained.
+
+Also consider restoring `immich.configuration.job.thumbnailGeneration.concurrency` — it is set to `1` for the SMR disk. Leave it at `1` unless thumbnailing proves to be the bottleneck; the drive, not the CPU, is the limit.
 
 - [ ] **Step 2: Apply**
 
@@ -1457,7 +1469,21 @@ helm --kube-context local-k3s upgrade immich \
 kubectl --context local-k3s get cm immich-immich-config -n immich -o jsonpath='{.data.immich-config\.yaml}'
 ```
 
-Expected: both `clip.enabled` and `facialRecognition.enabled` are `true`. The server pod must restart to pick this up; confirm with `kubectl --context local-k3s rollout status deploy/immich-server -n immich`.
+Expected: `clip.enabled`, `facialRecognition.enabled`, and `duplicateDetection.enabled` are `true`, and `ocr.enabled` is still `false`. The chart does not put a config checksum on the pod template, so `helm upgrade` alone will **not** restart the server — restart it explicitly and wait:
+
+```bash
+kubectl --context local-k3s rollout restart deploy/immich-server -n immich
+kubectl --context local-k3s rollout status deploy/immich-server -n immich
+```
+
+Then confirm the running process actually picked it up, rather than trusting the ConfigMap:
+
+```bash
+kubectl --context local-k3s run immich-probe --rm -i --restart=Never -n immich --image=curlimages/curl:latest -- \
+  curl -s http://immich-server.immich.svc.cluster.local:2283/api/server/features
+```
+
+Expected: `"smartSearch":true`, `"facialRecognition":true`, `"duplicateDetection":true`, `"ocr":false`. This endpoint is derived from the loaded config, so it reflects the process, not the file. Also check the logs for `Unknown keys found` — Immich warns rather than fails on a misspelled config key, so a typo is otherwise silent.
 
 - [ ] **Step 4: Queue the ML jobs**
 
@@ -1475,7 +1501,7 @@ Expected: inference activity. Expect **1–3 days** of CPU-only processing for a
 kubectl --context local-k3s top nodes
 ```
 
-If node-1 or node-3 is saturated to the point of affecting other workloads, lower job concurrency in the admin UI rather than killing the pods.
+If node-1 or node-3 is saturated to the point of affecting other workloads, lower `immich.configuration.job.*.concurrency` in `values.yml` and re-apply, rather than killing the pods. Note this cannot be done in the admin UI: `IMMICH_CONFIG_FILE` is set, so job settings are read-only there too.
 
 - [ ] **Step 6: Verify search works once jobs finish**
 
@@ -1502,7 +1528,7 @@ kubectl --context local-k3s delete -f immich/import/takeout-pvc.yml
 - [ ] **Step 8: Verify the bulk pool has room**
 
 ```bash
-kubectl --context local-k3s exec -n immich deploy/immich-server -- df -h /usr/src/app/upload
+kubectl --context local-k3s exec -n immich deploy/immich-server -- df -h /data
 ```
 
 Expected: usage consistent with the library alone, with the takeout no longer counted.
