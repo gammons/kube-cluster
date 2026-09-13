@@ -1,0 +1,14 @@
+# Declarative k3s server config. Survives reinstalls and upgrades, unlike editing
+# the systemd unit that the install script generates.
+#
+# servicelb (klipper) is disabled because MetalLB provides LoadBalancer IPs from
+# 192.168.20.0/24. Running both made klipper bind hostPorts on every node for
+# every LoadBalancer service; svclb-lb-unifi could never schedule because
+# svclb-traefik already held hostPort 80/443, and sat Pending for 650 days.
+disable:
+  - servicelb
+
+# The control-plane taint was previously applied by hand with kubectl and would
+# be lost on reinstall or re-registration. See the repo README.
+node-taint:
+  - "node-role.kubernetes.io/control-plane:NoExecute"
