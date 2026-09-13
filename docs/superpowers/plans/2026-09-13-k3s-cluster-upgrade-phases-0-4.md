@@ -4,7 +4,19 @@
 
 **Goal:** Make the homelab cluster safe to upgrade (tested rollback + fix pre-existing breakage), then bring the Tailscale operator, MetalLB, and cert-manager current and validate the k3s upgrade mechanism with a patch-level bump.
 
-**Architecture:** Every change is gated behind a Proxmox VM snapshot plus a ZFS snapshot of the NFS dataset, which together capture the entire cluster state atomically. Work proceeds lowest-risk first so the rollback mechanism is proven before anything important depends on it. Kubernetes minor version hops (1.30 → 1.36) are explicitly **out of scope** and deferred to a later plan.
+**Architecture:** Every change that cannot be undone in place is gated behind a *snapshot set* — a Proxmox VM snapshot of all 4 VMs plus a ZFS snapshot of `main-pool/k3s-nfs`, created and rolled back as one unit, which together capture the entire cluster state. Work proceeds lowest-risk first so the rollback mechanism is proven before anything important depends on it. Kubernetes minor version hops (1.30 → 1.36) are explicitly **out of scope** and deferred to a later plan.
+
+**Which tasks are gated, and which are deliberately not.** "Every change is gated" was the original claim and it was not true; state it precisely instead, because a task that believes it has a gate it does not have is worse than one that knows it has none.
+
+| Task | Gate | Why |
+|---|---|---|
+| 3, 6, 8, 9, 10, 11, 12 | **yes** — `create` at the start, `delete` after verification passes | irreversible or cluster-wide: LV extension, k3s config + restart, operator/CRD/manifest upgrades, k3s binary swap |
+| 0, 7 | no | read-only; Task 7's only write is a commit |
+| 1 | **not possible** | Task 1 installs the `qemu-guest-agent` that `snapshot-cluster.sh create` *refuses to run without*. Its rollback trigger says so and routes to forward diagnosis. |
+| 2 | n/a | Task 2 **is** the rollback test; its own snapshot is the subject, and Step 6 deletes it |
+| 4, 5 | no — `helm rollback` instead | both change only Helm release state, which is reversible from Helm's own history. Each records the current revision in Step 1 so the rollback target is a fact rather than a guess. |
+
+With one deliberate exception, each gate is created and deleted inside a single task, so **no task may assume a gate taken by an earlier one is still there** — by the time it starts, there is nothing left to roll back to. The exception is `pre-certmanager-117`: Task 10 creates it and Task 11 Step 6 deletes it, so during Task 11 two gates are live and `pre-certmanager-117` remains available as a route back past the intermediate cert-manager version as well as past v1.21.2. That is intentional and both tasks' triggers reflect it.
 
 **Tech Stack:** Proxmox VE 8.4.11 + ZFS, k3s v1.29.4 (SQLite datastore, single server), Helm 3, Ubuntu 24.04 guests, kube-prometheus-stack, Velero 1.18.1.
 
@@ -59,7 +71,7 @@
 | `tailscale/values.yml` | Tailscale operator values, secret-free |
 | `tailscale/README.md` | Install/upgrade, why the OAuth secret is not in git, and the `helm.sh/resource-policy=keep` requirement |
 | `metallb/README.md` | Manifest URL (`v0.16.1`) and config filename |
-| `cert-manager/install-crd.sh` | Pinned version, `crds.enabled`/`crds.keep` instead of `installCRDs` |
+| `cert-manager/install-crd.sh` | Pinned version, `crds.enabled`/`crds.keep` instead of `installCRDs`; `set -euo pipefail` so a failed CRD apply cannot fall through to the chart install |
 | `cert-manager/README.md` | What `install-crd.sh` installs, webhook admission probe, known-failing cert |
 
 ---
@@ -85,7 +97,59 @@ done
 
 Expected: `0` for all four hosts. If any is not `0`, **stop** — every later task needs root.
 
-- [ ] **Step 2: Record the baseline everything is compared against**
+- [ ] **Step 2: Check the two host-side conditions every gate depends on**
+
+Both of these are properties of the Proxmox host, not of the cluster, and both
+silently decide whether the gates in Tasks 3, 6, 8, 9, 10, 11 and 12 will work at
+all. Check them now, while nothing has changed, rather than discovering them at
+the first `create`.
+
+**2a — pool health.**
+
+```sh
+ssh root@192.168.5.1 'zpool status -x'
+```
+
+Expected: `all pools are healthy`. `snapshot-cluster.sh create` aborts unless
+that exact string is present, and its check is **pool-agnostic** — it does not
+care which pool is degraded. Without this step the first failure would surface at
+Task 1 Step 6, after the guest-agent install and four VM power-cycles have
+already happened. Decide here:
+
+- **`main-pool` is unhealthy → stop the plan.** It holds the VM zvols *and*
+  `k3s-nfs`, so there is no gate and no rollback to be had. Fix the pool first.
+- **`bulk-pool` is unhealthy → still stop, but for a different reason.**
+  `bulk-pool` holds no k3s VM state, so it is not a risk to anything in this
+  plan; it is a risk to *executing* this plan, because `create` will refuse
+  while any pool is degraded. Resolve or clear the condition (`zpool status
+  bulk-pool` for the cause; `zpool clear bulk-pool` if it is a latched
+  historical error) and re-run this step. **Do not edit the script to check only
+  `main-pool` as a way past this.** Narrowing the gate's own guard mid-plan is a
+  deliberate change to the safety mechanism and belongs in its own review, not
+  in an unblocking step.
+
+**2b — the NFS dataset must have no child datasets.**
+
+```sh
+ssh root@192.168.5.1 'zfs list -r -o name main-pool/k3s-nfs'
+```
+
+Expected: exactly one data line, `main-pool/k3s-nfs`. If **any** child dataset is
+listed, **stop and reassess before using any gate.** The script's header claims
+the snapshot set covers all 15 nfs PVCs, and with children present it does not:
+`create` runs `zfs snapshot` **non-recursively**, and the `-r` in `zfs rollback
+-r` means "destroy snapshots newer than this one", not "recurse into children".
+Any child dataset is therefore outside the safety net while appearing to be
+inside it. (`dataset_snapshots()` already filters `^main-pool/k3s-nfs@` and says
+in a comment that child snapshots are ignored, so the code anticipates children
+even though `create` never makes them.)
+
+**Do not fix this by switching `create` to `zfs snapshot -r`.** Recursive
+snapshots change what a rollback means and which PVCs move together, and that is
+a decision about the safety mechanism — it needs its own review, not an in-flight
+edit.
+
+- [ ] **Step 3: Record the baseline everything is compared against**
 
 ```sh
 kubectl --context local-k3s get nodes -o wide > /tmp/baseline-nodes.txt
@@ -105,11 +169,12 @@ infra/registry 192.168.20.50
 wprb-rocks/wprb-rocks-backend-service 192.168.20.2
 ```
 
-- [ ] **Step 3: Verify the committed snapshot script**
+- [ ] **Step 4: Verify the committed snapshot script**
 
 `proxmox/snapshot-cluster.sh` was authored and reviewed in Phase A — `16bfb36`
 (initial), `f8afe22` (whole-set pre-flight), `3a11cfe` (verify VMs stopped before
-rollback), `7016922` (pool-health guard no longer races a pipeline). **Do not
+rollback), `7016922` (pool-health guard no longer races a pipeline), `5fd3a6c`
+(wall-clock stop bound, `ConnectTimeout`, partial-set reporting). **Do not
 rewrite it.** Read it, then confirm it is present, executable and unmodified:
 
 ```sh
@@ -119,15 +184,17 @@ git log --oneline -1 -- proxmox/snapshot-cluster.sh
 ```
 
 Expected: `script OK`, no output from `git status` (clean), and the most recent
-commit touching it is `7016922` or a later Phase A/B fix — not a local edit.
+commit touching it is `5fd3a6c` or a later reviewed fix — not a local edit.
 
 Read the file before using it. The behaviour every later task depends on:
 `create` aborts unless all pools are healthy, `qemu-guest-agent` answers on all
 4 VMs, and the label is unused on all 5 targets; `rollback` aborts unless the
-label is present on all 5 targets and every VM has actually stopped; `delete` is
-idempotent but fails loudly if a target refuses to give the snapshot up.
+label is present on all 5 targets and every VM has actually stopped within 60s of
+wall-clock; `delete` is idempotent but fails loudly if a target refuses to give
+the snapshot up. `create` and `rollback` both report the *exact* partial state if
+they fail part way through — read that report rather than re-running blindly.
 
-- [ ] **Step 4: Confirm it refuses to run (agent not installed yet)**
+- [ ] **Step 5: Confirm it refuses to run (agent not installed yet)**
 
 ```sh
 ./proxmox/snapshot-cluster.sh create preflight-check
@@ -136,7 +203,7 @@ idempotent but fails loudly if a target refuses to give the snapshot up.
 Expected: `ABORT: qemu-guest-agent not responding on VM 100`.
 This is the correct pre-change state — the guard works, and Task 1 installs the agent.
 
-- [ ] **Step 5: Nothing to commit**
+- [ ] **Step 6: Nothing to commit**
 
 The script is already committed (Phase A). Confirm the working tree is clean for
 it rather than attempting a commit — `git commit` with nothing staged exits
@@ -274,14 +341,54 @@ Expected: `rollbacktest` present on all 4 VMs and on `main-pool/k3s-nfs`.
 
 - [ ] **Step 2: Make a change on both storage layers that rollback must undo**
 
+The canaries are the entire proof. If either one is never written — a `sudo -S`
+auth failure with stderr suppressed, or `main-pool/k3s-nfs` not actually mounted
+at `/main-pool/k3s-nfs` — then Step 4 finds it absent afterwards and reports
+success for a rollback that proved nothing. **A write that fails must be
+indistinguishable from nothing, not from success**, so read each canary back and
+hard-fail if it does not come back.
+
+Run this as one block. The parentheses make it a subshell so the `exit 1` ends
+the step rather than your login shell, and so a failure on the first canary stops
+the second from being written. Each result is captured into a variable and then
+tested — **not** piped into `grep -q`, which exits on match and can `SIGPIPE` the
+`ssh` upstream, failing the pipeline under `pipefail` *because* it matched (the
+same trap `snapshot-cluster.sh` documents around its pool-health check).
+
 ```sh
+(
+set -uo pipefail
 PW=$(tr -d '\n' < ~/sudo-pw.txt)
-printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-node-1 \
-  'sudo -S -p "" sh -c "echo ROLLBACK_CANARY > /root/rollback-canary.txt; cat /root/rollback-canary.txt"'
-ssh root@192.168.5.1 'echo ROLLBACK_CANARY > /main-pool/k3s-nfs/rollback-canary.txt; cat /main-pool/k3s-nfs/rollback-canary.txt'
+
+vm=$(printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-node-1 \
+  'sudo -S -p "" sh -c "echo ROLLBACK_CANARY > /root/rollback-canary.txt; cat /root/rollback-canary.txt"')
+[ "$vm" = "ROLLBACK_CANARY" ] || {
+  echo "ABORT: VM canary did not read back from k3s-node-1:/root/rollback-canary.txt"
+  echo "       got: '${vm}'  -- check for a sudo auth failure or a full/ro disk."
+  echo "       Do NOT run Step 3: a rollback whose canary was never written"
+  echo "       cannot prove anything, and Step 4 would report success."
+  exit 1
+}
+
+nfs=$(ssh root@192.168.5.1 \
+  'echo ROLLBACK_CANARY > /main-pool/k3s-nfs/rollback-canary.txt; cat /main-pool/k3s-nfs/rollback-canary.txt')
+[ "$nfs" = "ROLLBACK_CANARY" ] || {
+  echo "ABORT: NFS canary did not read back from /main-pool/k3s-nfs/rollback-canary.txt"
+  echo "       got: '${nfs}'  -- confirm the dataset is mounted there:"
+  echo "       ssh root@192.168.5.1 'zfs get -H -o value mountpoint,mounted main-pool/k3s-nfs'"
+  echo "       Do NOT run Step 3."
+  exit 1
+}
+
+# Receipt, written on the workstation -- the one place the rollback does not
+# touch. Step 4 refuses to accept "canary gone" as proof unless this exists.
+date -u +%FT%TZ > /tmp/rollback-canary-written.txt
+echo "OK: both canaries written and read back; receipt in /tmp/rollback-canary-written.txt"
+)
 ```
 
-Expected: `ROLLBACK_CANARY` printed twice. These files did **not** exist when the snapshot was taken.
+Expected: `OK: both canaries written and read back`. Neither file existed when
+the Step 1 snapshot was taken, so the rollback must remove both.
 
 - [ ] **Step 3: Roll back**
 
@@ -293,18 +400,54 @@ Type `rollbacktest` at the confirmation prompt. Takes several minutes (stops, ro
 
 - [ ] **Step 4: Verify both canaries are gone and the cluster is healthy**
 
+"Absent afterwards" only means something if they were present beforehand, so
+assert Step 2's receipt first. Without it, an absent canary is equally consistent
+with a working rollback and with a canary that was never written.
+
+```sh
+test -f /tmp/rollback-canary-written.txt || {
+  echo "ABORT: no Step 2 receipt. The canaries were never confirmed written, so"
+  echo "       'canary gone' below would prove nothing. Re-run Step 1-3 properly;"
+  echo "       do not record this rollback as verified."
+}
+cat /tmp/rollback-canary-written.txt   # when the canaries were confirmed written
+```
+
+Expected: the receipt exists and its timestamp is **before** the Step 3 rollback.
+If the `ABORT` prints, stop here — the rest of this step cannot be interpreted.
+
 ```sh
 PW=$(tr -d '\n' < ~/sudo-pw.txt)
 printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-node-1 \
   'sudo -S -p "" sh -c "test -f /root/rollback-canary.txt && echo CANARY STILL PRESENT || echo canary gone"' 2>/dev/null
 ssh root@192.168.5.1 'test -f /main-pool/k3s-nfs/rollback-canary.txt && echo "NFS CANARY STILL PRESENT" || echo "nfs canary gone"'
-kubectl --context local-k3s get nodes
-kubectl --context local-k3s get pods -A --field-selector=status.phase!=Succeeded | grep -vE "Running|Completed" | head
 ```
 
-Expected: `canary gone`, `nfs canary gone`, 4 nodes `Ready`, and no unexpected non-Running pods beyond the known `svclb-lb-unifi` `Pending` ones.
+Expected: `canary gone` and `nfs canary gone`. Note that `2>/dev/null` on the
+first line means a sudo failure here also prints nothing at all — an *empty* line
+is not `canary gone` and must be treated as a failed check, not a pass.
 
-**If either canary survives, the rollback mechanism is broken — stop the entire plan and diagnose. Do not proceed to any upgrade.**
+Four VMs have just been restarted, so confirm the API is actually answering
+before reading anything from it:
+
+```sh
+for i in $(seq 1 30); do kubectl --context local-k3s get --raw /readyz >/dev/null 2>&1 && { echo "API ready"; break; }; sleep 10; done
+kubectl --context local-k3s get --raw /readyz >/dev/null || echo "ABORT: API not ready 300s after rollback -- that is itself a rollback failure"
+kubectl --context local-k3s get nodes
+if pods=$(kubectl --context local-k3s get pods -A --field-selector=status.phase!=Succeeded); then
+  printf '%s\n' "$pods" | awk 'NR>1 && $4 != "Running" && $4 != "Completed" { n++; print } END { if (!n) print "no unhealthy pods" }'
+else
+  echo "ABORT: cannot list pods; the cluster did not come back from the rollback"
+fi
+```
+
+The `if` is what makes this trustworthy: `no unhealthy pods` is printed **only**
+on the branch where the listing actually succeeded, so it can never stand in for
+"nothing answered".
+
+Expected: `API ready`, 4 nodes `Ready`, and no unexpected non-Running pods beyond the known `svclb-lb-unifi` `Pending` ones.
+
+**If either canary survives, the rollback mechanism is broken — stop the entire plan and diagnose. Do not proceed to any upgrade.** The same applies if the receipt is missing: an unproven rollback and a broken one are the same thing as far as every later task is concerned.
 
 - [ ] **Step 5: Compare against the Task 0 baseline**
 
@@ -315,10 +458,15 @@ diff <(sort /tmp/baseline-lb.txt) /tmp/after-lb.txt && echo "LB IPs unchanged"
 
 Expected: `LB IPs unchanged`.
 
-- [ ] **Step 6: Delete the test snapshot**
+- [ ] **Step 6: Delete the test snapshot and the receipt**
+
+The receipt is removed too. Leaving it behind would let a *second* run of this
+task pass Step 4's assertion on a receipt from the first run — the exact
+self-certification Step 2 exists to prevent.
 
 ```sh
 ./proxmox/snapshot-cluster.sh delete rollbacktest
+rm -f /tmp/rollback-canary-written.txt
 ```
 
 - [ ] **Step 7: Verify the committed documentation**
@@ -362,7 +510,21 @@ printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller 'sudo -S -p "" s
 
 Expected: `VFree` ≈ `31.00g`, `/` size `31G`, ~9.2G available.
 
-- [ ] **Step 2: Extend the LV and grow the filesystem**
+- [ ] **Step 2: Gate — take a snapshot**
+
+`lvextend` is the only step in this plan that cannot be undone in place: LVM has
+no "shrink the LV back" that is safe against a filesystem that has already grown
+onto the new extents. The snapshot set is therefore the *only* route back, which
+makes this gate mandatory rather than precautionary. It was missing.
+
+```sh
+./proxmox/snapshot-cluster.sh create pre-lvextend
+```
+
+Expected: `OK: snapshot set 'pre-lvextend' created`. **If it aborts, do not run
+Step 3.** Without the gate there is no way back from Step 3 at all.
+
+- [ ] **Step 3: Extend the LV and grow the filesystem**
 
 `ext4` supports online resize, so no downtime.
 
@@ -374,7 +536,7 @@ printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller \
 
 Expected: `Size of logical volume ubuntu-vg/ubuntu-lv changed from 31.00 GiB ... to <61.x> GiB` and `The filesystem on /dev/mapper/ubuntu--vg-ubuntu--lv is now ... blocks long.`
 
-- [ ] **Step 3: Verify the post-change state**
+- [ ] **Step 4: Verify the post-change state**
 
 ```sh
 PW=$(tr -d '\n' < ~/sudo-pw.txt)
@@ -384,7 +546,19 @@ kubectl --context local-k3s get nodes k3s-controller
 
 Expected: `/` ≈ 61G with ~39G available and usage ~34%; node still `Ready,SchedulingDisabled`.
 
-**Rollback trigger:** `lvextend` errors, or `/` becomes read-only. LV extension is not reversible in place — roll back the VM snapshot from Task 4's gate if this is run after one, otherwise restore from the Task 2 procedure.
+- [ ] **Step 5: Delete the gate snapshot**
+
+Only after Step 4 has passed. While this snapshot exists it is the one thing that
+can undo Step 3, so do not release it on the strength of `lvextend`'s own output —
+release it once `df` and the node's `Ready` status both confirm the result.
+
+```sh
+./proxmox/snapshot-cluster.sh delete pre-lvextend
+```
+
+Expected: `OK: snapshot set 'pre-lvextend' deleted`.
+
+**Rollback trigger:** `lvextend` errors, or `/` becomes read-only, or the node does not return to `Ready,SchedulingDisabled`. Recovery: `./proxmox/snapshot-cluster.sh rollback pre-lvextend`. LV extension is not reversible in place, so this gate is the only route back — there is no forward fix to attempt first.
 
 ---
 
@@ -399,9 +573,23 @@ task verifies it, then applies it to the cluster.
 
 ```sh
 kubectl --context local-k3s get schedules.velero.io velero-homelab-daily -n velero -o jsonpath='{.spec.template.includedNamespaces}'; echo
+helm --kube-context local-k3s history velero -n velero
+kubectl --context local-k3s get backups.velero.io -n velero --sort-by=.metadata.creationTimestamp \
+  -o custom-columns='NAME:.metadata.name,PHASE:.status.phase,ITEMS:.status.progress.totalItems' | tail -3
 ```
 
 Expected: `["home-assistant","dev-box","openclaw","openclaw-dottie","openclaw-stonk","immich"]`
+
+**Write down two numbers from this step.** Nothing else records either, and both
+are needed later:
+
+- **The current `deployed` revision** from `helm history`. Step 3 expects the next
+  one, and the rollback trigger needs this one as its target. Do not assume `2` —
+  the release history is whatever the cluster says it is.
+- **`ITEMS` from the most recent `Completed` backup.** Step 5 compares against it.
+  The spec recorded `447` when it was written; that figure is now days old and
+  moves with the cluster, so read the live value rather than trusting either the
+  spec or this plan.
 
 - [ ] **Step 2: Verify the committed values file**
 
@@ -425,12 +613,23 @@ one-off Backup, and the two must match or the verification proves nothing.
 
 - [ ] **Step 3: Apply**
 
+The `vmware-tanzu` alias is a property of the local Helm config, not of the
+cluster, so it may not exist on this workstation at all — and if it does, its
+cache may predate chart 12.1.0. Either way `helm upgrade` fails on the chart
+reference rather than on anything meaningful. Tasks 8 and 10 both do this; Task 4
+did not.
+
 ```sh
+helm repo add vmware-tanzu https://vmware-tanzu.github.io/helm-charts 2>/dev/null; helm repo update vmware-tanzu >/dev/null
+helm search repo vmware-tanzu/velero --version 12.1.0
 helm upgrade velero vmware-tanzu/velero --kube-context local-k3s -n velero \
   --version 12.1.0 -f velero/values.yml
 ```
 
-Expected: `STATUS: deployed`, `REVISION: 3`.
+Expected: `helm search repo` lists chart `12.1.0` (if it lists nothing, the repo
+cache is still stale or the version does not exist — stop, do not run the
+upgrade), then `STATUS: deployed` with `REVISION` exactly one higher than the
+revision recorded in Step 1.
 
 - [ ] **Step 4: Verify the schedule changed**
 
@@ -464,7 +663,7 @@ kubectl --context local-k3s get backups.velero.io -n velero --sort-by=.metadata.
   -o custom-columns='NAME:.metadata.name,PHASE:.status.phase,ERR:.status.errors,ITEMS:.status.progress.totalItems' | tail -3
 ```
 
-Expected: `PHASE=Completed`, `ERR=<none>`, and `ITEMS` substantially higher than the previous 466 (now covering ~25 namespaces).
+Expected: `PHASE=Completed`, `ERR=<none>`, and `ITEMS` substantially higher than the pre-change `ITEMS` you recorded in Step 1 (now covering ~25 namespaces rather than 6). The spec's reading was **447** (`docs/superpowers/specs/2026-09-12-k3s-cluster-upgrade-design.md`); compare against the live Step 1 figure, not against either number written down here.
 
 If `PartiallyFailed`, list the failures before deciding anything:
 ```sh
@@ -483,7 +682,7 @@ git status --porcelain -- velero/values.yml
 
 Expected: no output.
 
-**Rollback trigger:** backup phase is `Failed` (not `PartiallyFailed`), or runtime exceeds 60 minutes. Recovery: `helm rollback velero 2 -n velero`.
+**Rollback trigger:** backup phase is `Failed` (not `PartiallyFailed`), or runtime exceeds 60 minutes. Recovery: `helm rollback velero <prev-rev> --kube-context local-k3s -n velero`, where `<prev-rev>` is the `deployed` revision recorded in Step 1 — re-read it with `helm --kube-context local-k3s history velero -n velero` rather than assuming a number. There is no snapshot gate on this task and none is needed: the change is confined to the Helm release and the Schedule object it owns, both of which `helm rollback` restores.
 
 ---
 
@@ -539,7 +738,30 @@ helm --kube-context local-k3s list -A --failed
 
 Expected: no rows.
 
-**Rollback trigger:** a workload that was `Running` before stops being `Running`, or the `openclaw-stonk` data PVC changes identity. Recovery: `helm rollback <release> <previous-rev>`; if the pod cannot start, roll back the cluster snapshot.
+**Rollback trigger:** a workload that was `Running` before stops being `Running`, or the `openclaw-stonk` data PVC changes identity.
+
+**Recovery — and there is no snapshot gate here, deliberately.** Nothing in this
+task takes one, and no earlier gate is still alive by the time it runs (Task 3
+deletes `pre-lvextend` at its own last step, and Task 2 deletes `rollbacktest` at
+Step 6), so "roll back the cluster snapshot" is not an option that exists. Do not
+go looking for one mid-incident.
+
+What this task actually changes is two Helm releases, and Helm's own history is
+the way back:
+
+```sh
+helm --kube-context local-k3s history home-assistant -n home-assistant
+helm --kube-context local-k3s rollback home-assistant 7 -n home-assistant   # back to the failed rev
+```
+
+Rolling forward to the revision you came from is reversible, so try that first.
+If a pod still cannot start after that, the cause is a pre-existing problem with
+the workload — these releases were *already* `failed` before this task touched
+them, and rev 6/3 are the same chart versions as 7/4. Diagnose it as a workload
+fault. If you decide you need the option of a whole-cluster rollback before
+digging further, **take a snapshot first** (`./proxmox/snapshot-cluster.sh create
+pre-helm-triage`) rather than acting as though one already exists — and delete it
+when you are done.
 
 ---
 
@@ -617,13 +839,35 @@ the config was **not** written — stop, do not proceed to Step 5.
 
 - [ ] **Step 5: Wait for the API and verify svclb is gone**
 
+k3s has just been restarted, which is exactly when the API is *not* answering. A
+bare `grep svclb || echo "no svclb DaemonSets"` prints the success string when the
+`kubectl` fails, so "the DaemonSets are gone" and "the API never replied" are the
+same output — and this step is the whole point of the task. Wait for the API,
+hard-fail if it does not come back, then separate the listing from the matching so
+a failed listing cannot be read as an empty result.
+
 ```sh
 for i in $(seq 1 20); do kubectl --context local-k3s get --raw /readyz >/dev/null 2>&1 && { echo "API ready"; break; }; sleep 10; done
-kubectl --context local-k3s get ds -n kube-system | grep svclb || echo "no svclb DaemonSets"
-kubectl --context local-k3s get pods -A | grep svclb || echo "no svclb pods"
+kubectl --context local-k3s get --raw /readyz >/dev/null || {
+  echo "ABORT: API not ready 200s after the k3s restart. This is the rollback"
+  echo "       trigger for this task -- do not interpret the checks below, they"
+  echo "       cannot tell 'svclb is gone' from 'nothing answered'."
+}
+
+if ds=$(kubectl --context local-k3s get ds -n kube-system -o name); then
+  printf '%s\n' "$ds" | awk '/svclb/ { n++; print } END { if (!n) print "no svclb DaemonSets" }'
+else
+  echo "ABORT: cannot list DaemonSets -- API not answering. This is NOT 'svclb is gone'."
+fi
+
+if pods=$(kubectl --context local-k3s get pods -A -o name); then
+  printf '%s\n' "$pods" | awk '/svclb/ { n++; print } END { if (!n) print "no svclb pods" }'
+else
+  echo "ABORT: cannot list pods -- API not answering. This is NOT 'svclb is gone'."
+fi
 ```
 
-Expected: `API ready`, then `no svclb DaemonSets` and `no svclb pods`.
+Expected: `API ready`, then `no svclb DaemonSets` and `no svclb pods`, with no `ABORT` anywhere. The `if` is the point: each success string is printed only on the branch where the listing succeeded, so it cannot be produced by a failed `kubectl`.
 
 - [ ] **Step 6: Verify all 5 LoadBalancer IPs survived — this is the acceptance test**
 
@@ -667,17 +911,73 @@ Expected: no `git status` output, most recent commit `2c2fbcc`, and at least the
 Read `## Upgrading` now — Task 12 executes exactly that procedure, and the
 `K3S_URL`/`K3S_TOKEN` warning there is the one that matters most.
 
-- [ ] **Step 9: Delete the gate snapshot**
+- [ ] **Step 9: Correct the top-level `README.md`**
 
-`k3s/config.yaml` and `k3s/README.md` are already committed, so there is nothing
-to stage. Confirm the tree is clean rather than attempting a commit:
+Step 4 creates `/etc/rancher/k3s/config.yaml` on the controller, which makes two
+statements in the top-level `README.md` false. Nothing else in this plan corrects
+them, and `k3s/README.md` does not: it documents the file without touching the
+older claims that the file does not exist.
 
 ```sh
-git status --porcelain -- k3s/config.yaml k3s/README.md
+grep -n "config.yaml" README.md
+```
+
+The two to fix:
+
+1. **`README.md:30`** — "There is no `/etc/rancher/k3s/config.yaml` on any node --
+   all configuration is default." Replace with the truth after Step 4, which is
+   narrower than a blanket statement in either direction — the *controller* has
+   one; the three workers still do not:
+
+   ```markdown
+   The controller has `/etc/rancher/k3s/config.yaml`; the three worker nodes have
+   none and run entirely on defaults. The repo copy is `k3s/config.yaml`, and
+   `k3s/README.md` documents what it sets and how to reinstall it.
+   ```
+
+2. **The note under *Taints* (~`README.md:47`)** — "**Important:** ... To make it
+   persistent, create `/etc/rancher/k3s/config.yaml` on the controller:" followed
+   by a `node-taint` snippet. This now instructs the reader to create a file that
+   already exists, and to add a setting that is already in it. Rewrite it as a
+   statement of fact:
+
+   ```markdown
+   **Important:** This taint is on the node object, not applied by the command
+   above on every boot. It is persisted in `/etc/rancher/k3s/config.yaml` on the
+   controller (see `k3s/config.yaml` in this repo), so a k3s reinstall that keeps
+   that file re-applies it. A reinstall that *replaces* the file does not.
+   ```
+
+Keep the `node-taint` YAML if it reads as an illustration of what the file
+contains; drop it if it reads as an instruction. Then commit — this is the only
+repo file Task 6 changes, so stage it alone:
+
+```sh
+git diff -- README.md
+git add README.md
+git commit -m "record the controller's config.yaml in the top-level README
+
+Task 6 installed /etc/rancher/k3s/config.yaml on the controller, which makes the
+README's 'there is no config.yaml on any node' false and turns the 'to make it
+persistent, create ...' note into an instruction to create a file that already
+exists. The workers still have none, so say controller rather than any node." -- README.md
+```
+
+Expected: `README.md` no longer claims the file is absent and no longer tells the
+reader to create it; `git status --porcelain -- README.md` is clean afterwards.
+
+- [ ] **Step 10: Delete the gate snapshot**
+
+`k3s/config.yaml` and `k3s/README.md` are already committed, so there is nothing
+to stage for those two. Confirm the tree is clean rather than attempting a commit:
+
+```sh
+git status --porcelain -- k3s/config.yaml k3s/README.md README.md
 ./proxmox/snapshot-cluster.sh delete pre-servicelb
 ```
 
-Expected: no `git status` output, then `OK: snapshot set 'pre-servicelb' deleted`.
+Expected: no `git status` output (Step 9's commit has already landed `README.md`),
+then `OK: snapshot set 'pre-servicelb' deleted`.
 
 **Rollback trigger:** any of the 5 LoadBalancer IPs missing or changed, traefik unreachable, or the API not ready within 200s. Recovery: `./proxmox/snapshot-cluster.sh rollback pre-servicelb`.
 
@@ -772,6 +1072,7 @@ and committed in Phase A. This task verifies them, then applies the upgrade.
 
 ```sh
 helm --kube-context local-k3s list -n tailscale
+helm --kube-context local-k3s history tailscale-operator -n tailscale
 kubectl --context local-k3s get pods -n tailscale --no-headers | wc -l
 kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -c prometheus -- \
   wget -qO- 'http://localhost:9090/api/v1/targets?state=active' 2>/dev/null | \
@@ -779,6 +1080,10 @@ kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-
 ```
 
 Record the operator version, the pod count, and how many OVH/production targets are `up`. That target count is the acceptance criterion in Step 8.
+
+**Also record the current `deployed` revision** from `helm history`. The rollback
+trigger needs it, and nothing else in this task captures it — do not assume `1`
+just because the release has only ever been upgraded once.
 
 - [ ] **Step 2: Rotate the OAuth credential and move it out of Helm values**
 
@@ -871,7 +1176,7 @@ helm upgrade tailscale-operator tailscale/tailscale-operator --kube-context loca
 kubectl --context local-k3s rollout status deploy/operator -n tailscale --timeout=5m
 ```
 
-Expected: `STATUS: deployed`, `REVISION: 2`, rollout complete.
+Expected: `STATUS: deployed`, `REVISION` one higher than the revision recorded in Step 1, rollout complete.
 
 - [ ] **Step 8: Verify the Secret survived and the proxies came back — acceptance test**
 
@@ -890,9 +1195,18 @@ admin console as in Step 2, then re-apply Step 3) before judging anything else.
 
 The `ts-*` StatefulSets are recreated, so targets will flap briefly. Allow time before judging.
 
+`grep -vc Running || echo "all running"` cannot be trusted here: `grep -c` exits
+non-zero when it matches nothing, *and* when the `kubectl` upstream fails, so both
+"every pod is Running" and "the API did not answer" print `all running`. Capture
+the listing, fail on the listing, then judge the contents.
+
 ```sh
 sleep 180
-kubectl --context local-k3s get pods -n tailscale --no-headers | grep -vc Running || echo "all running"
+if pods=$(kubectl --context local-k3s get pods -n tailscale --no-headers); then
+  printf '%s\n' "$pods" | awk 'NF && $3 != "Running" { n++; print } END { if (!n) print "all running" }'
+else
+  echo "ABORT: cannot list tailscale pods -- this is a failure, not 'all running'"
+fi
 kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -c prometheus -- \
   wget -qO- 'http://localhost:9090/api/v1/targets?state=active' 2>/dev/null | \
   jq -r '[.data.activeTargets[]|select(.labels.cluster=="ovh" or .labels.cluster=="production")]|group_by(.health)|.[]|"\(.[0].health): \(length)"'
@@ -931,7 +1245,7 @@ git status --porcelain -- tailscale/values.yml tailscale/README.md
 
 Expected: no `git status` output, then `OK: snapshot set 'pre-tailscale' deleted`.
 
-**Rollback trigger:** the `operator-oauth` Secret is missing after the upgrade, OVH/production `up` target count does not return to the Step 1 value within 5 minutes, or the operator pod crash-loops. Recovery: `helm rollback tailscale-operator 1 -n tailscale`; if that fails, `./proxmox/snapshot-cluster.sh rollback pre-tailscale`. Note that `helm rollback` will **not** bring back a pruned Secret with a new credential in it — that has to be re-created from the Tailscale admin console.
+**Rollback trigger:** the `operator-oauth` Secret is missing after the upgrade, OVH/production `up` target count does not return to the Step 1 value within 5 minutes, or the operator pod crash-loops. Recovery: `helm rollback tailscale-operator <prev-rev> --kube-context local-k3s -n tailscale`, where `<prev-rev>` is the `deployed` revision recorded in Step 1 (`helm --kube-context local-k3s history tailscale-operator -n tailscale` if you did not write it down); if that fails, `./proxmox/snapshot-cluster.sh rollback pre-tailscale`. Note that `helm rollback` will **not** bring back a pruned Secret with a new credential in it — that has to be re-created from the Tailscale admin console.
 
 ---
 
@@ -1030,7 +1344,26 @@ match the one you applied in Step 4.
 ./proxmox/snapshot-cluster.sh delete pre-metallb
 ```
 
-**Rollback trigger:** any LB IP missing/changed, or any of the 3 probed IPs unreachable after 2 minutes. Recovery: re-apply the v0.14.5 manifest and `kubectl apply -f /tmp/metallb-backup/crs.yaml`; if IPs still do not return, `./proxmox/snapshot-cluster.sh rollback pre-metallb`.
+**Rollback trigger:** any LB IP missing/changed, or any of the 3 probed IPs unreachable after 2 minutes.
+
+**Recovery:**
+
+```sh
+kubectl --context local-k3s apply -f https://raw.githubusercontent.com/metallb/metallb/v0.14.5/config/manifests/metallb-native.yaml
+kubectl --context local-k3s apply --server-side --force-conflicts -f /tmp/metallb-backup/crs.yaml
+```
+
+`--server-side --force-conflicts` is not optional on the second command.
+`/tmp/metallb-backup/crs.yaml` is `kubectl get -o yaml` output, so every object in
+it carries `metadata.resourceVersion`, `uid` and `creationTimestamp` from when it
+was read. A client-side `apply` of that is rejected — or worse, applied with a
+stale `resourceVersion` that conflicts with the live object — and it also collides
+with whichever field manager owns those fields now. Server-side apply ignores the
+read-only metadata and `--force-conflicts` takes ownership rather than erroring
+mid-recovery. (Stripping the metadata first is equally valid if you prefer:
+`kubectl ... -o yaml | yq 'del(.items[].metadata.resourceVersion, .items[].metadata.uid, .items[].metadata.creationTimestamp)'`.)
+
+If the IPs still do not return, `./proxmox/snapshot-cluster.sh rollback pre-metallb`.
 
 ---
 
@@ -1042,16 +1375,21 @@ A 7-minor jump in one step gives a large surface to bisect. Stopping at 1.17 fir
 version (`v1.21.2`, committed in Phase A as `3f1ae20`) and is deliberately not
 stepped down to the intermediate. **Do not run `install-crd.sh` in this task** —
 it would jump straight to v1.21.2 and skip the intermediate stop this task exists
-to provide. Use the explicit commands in Steps 3 and 4.
+to provide. Use the explicit commands in Steps 3, 3b and 4.
 
 - [ ] **Step 1: Record the pre-change state**
 
 ```sh
 kubectl --context local-k3s get deploy -n cert-manager -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.containers[0].image}{"\n"}{end}'
 kubectl --context local-k3s get clusterissuers,certificates -A
+helm --kube-context local-k3s history cert-manager -n cert-manager
 ```
 
 Expected: images at `v1.14.5`; `letsencrypt-prod` `True`; 5 Certificates, 4 `True` and `truelist-stag-io-cert` `False` (known, Task 7).
+
+**Record the current `deployed` revision** from `helm history`. The rollback
+trigger for this task and for Task 11 both need it, and nothing else captures it —
+do not assume `1`.
 
 - [ ] **Step 2: Gate — snapshot**
 
@@ -1065,14 +1403,58 @@ cert-manager requires CRDs to be updated **before** the chart.
 
 ```sh
 kubectl --context local-k3s apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.2/cert-manager.crds.yaml
-kubectl --context local-k3s get crd | grep cert-manager
 ```
 
-Expected: 6 cert-manager CRDs `configured`.
+Expected: 6 lines, each `customresourcedefinition.apiextensions.k8s.io/... configured`
+(or `unchanged`), and **no errors**. That output is the only direct evidence the
+apply landed — `kubectl get crd | grep cert-manager` afterwards would only prove
+the CRDs exist, which they already did before this step ran.
+
+- [ ] **Step 3b: Verify the CRDs are present *and* annotated — gate before Step 4**
+
+This is the check that makes Step 4 safe, and it was missing. Step 4 runs the
+chart with `crds.enabled=false`, which means the chart renders **no** CRDs at all
+and takes no responsibility for them: from that point on the only thing standing
+between the cluster and a CRD deletion is the `helm.sh/resource-policy: keep`
+annotation that the released `cert-manager.crds.yaml` carries on all 6. Confirm all
+6 exist and all 6 carry it:
+
+```sh
+kubectl --context local-k3s get crd \
+  certificates.cert-manager.io certificaterequests.cert-manager.io \
+  issuers.cert-manager.io clusterissuers.cert-manager.io \
+  orders.acme.cert-manager.io challenges.acme.cert-manager.io \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.helm\.sh/resource-policy}{"\n"}{end}'
+```
+
+Expected: exactly 6 rows, each ending in `keep`:
+
+```
+certificates.cert-manager.io	keep
+certificaterequests.cert-manager.io	keep
+issuers.cert-manager.io	keep
+clusterissuers.cert-manager.io	keep
+orders.acme.cert-manager.io	keep
+challenges.acme.cert-manager.io	keep
+```
+
+**Any row with a blank second column, or fewer than 6 rows, means stop — do not
+run Step 4.** A blank means either the Step 3 apply did not land on that CRD, or
+that CRD predates it and is unprotected. A `NotFound` means a CRD is missing
+outright, and upgrading the chart on top of that produces a live cluster-wide
+admission webhook with nothing behind it: every Certificate and Issuer admission
+in the cluster fails, including ones that have nothing to do with cert-manager's
+own reconciliation. Re-run Step 3 and read its output rather than working around
+this.
 
 - [ ] **Step 4: Upgrade the chart**
 
-`installCRDs` was renamed to `crds.enabled` in cert-manager 1.15; the old key still works but is deprecated. Since CRDs were applied in Step 3, disable chart-managed CRDs.
+`installCRDs` was renamed to `crds.enabled` in cert-manager 1.15; the old key still works but is deprecated. Since CRDs were applied in Step 3 and verified in Step 3b, disable chart-managed CRDs.
+
+`--set crds.keep=true` is passed for symmetry with `cert-manager/install-crd.sh`
+and is **inert** here: `crds.keep` only adds the `keep` annotation to CRDs the
+chart itself renders, and `crds.enabled=false` means it renders none. It is not
+what protects the CRDs — Step 3b is.
 
 ```sh
 helm repo add jetstack https://charts.jetstack.io 2>/dev/null; helm repo update jetstack >/dev/null
@@ -1119,7 +1501,21 @@ kubectl --context local-k3s get clusterissuer letsencrypt-prod
 
 Expected: the same 4 `True` certificates as Step 1, `letsencrypt-prod` still `True`. No certificate that was `True` may become `False`.
 
-**Rollback trigger:** the webhook probe fails, any previously-`True` certificate goes `False`, or `letsencrypt-prod` stops being `Ready`. Recovery: `helm rollback cert-manager 1 -n cert-manager`; CRDs are kept (`crds.keep=true`) so they are not destroyed. If the webhook is still broken, `./proxmox/snapshot-cluster.sh rollback pre-certmanager-117`.
+**Rollback trigger:** the webhook probe fails, any previously-`True` certificate goes `False`, or `letsencrypt-prod` stops being `Ready`.
+
+**Recovery:** `helm rollback cert-manager <prev-rev> --kube-context local-k3s -n cert-manager`, where `<prev-rev>` is the `deployed` revision recorded in Step 1.
+
+The CRDs — and therefore every Certificate, Issuer and Order object in the cluster
+— survive that rollback because **the chart does not manage them**: with
+`crds.enabled=false` it renders no CRDs, so neither the old nor the new manifest
+contains any for Helm to prune. `crds.keep=true` is *not* the reason and cannot be:
+it only annotates CRDs the chart renders, and there are none, so it is inert. The
+`helm.sh/resource-policy: keep` annotation that does exist on the 6 CRDs comes from
+the released `cert-manager.crds.yaml` applied in Step 3 and verified in Step 3b, and
+it guards against a *future* chart install that does render them — it is a second
+line, not the first.
+
+If the webhook is still broken after the Helm rollback, `./proxmox/snapshot-cluster.sh rollback pre-certmanager-117`.
 
 ---
 
@@ -1146,15 +1542,44 @@ Expected: images at `v1.17.2`, same 4 `True` certificates.
 ./proxmox/snapshot-cluster.sh create pre-certmanager-121
 ```
 
-- [ ] **Step 3: Apply CRDs, then upgrade**
+- [ ] **Step 3: Apply CRDs**
 
 ```sh
 kubectl --context local-k3s apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.2/cert-manager.crds.yaml
+```
+
+Expected: 6 `configured` lines, no errors.
+
+- [ ] **Step 3b: Verify the CRDs are present *and* annotated — gate before the upgrade**
+
+Same gate as Task 10 Step 3b, and for the same reason: the chart below runs with
+`crds.enabled=false`, so it renders no CRDs and `crds.keep=true` is inert. The only
+protection on the 6 CRDs is the annotation the applied file carries. Do not chain
+this apply and the `helm upgrade` in one block — the point is to look at the result
+in between.
+
+```sh
+kubectl --context local-k3s get crd \
+  certificates.cert-manager.io certificaterequests.cert-manager.io \
+  issuers.cert-manager.io clusterissuers.cert-manager.io \
+  orders.acme.cert-manager.io challenges.acme.cert-manager.io \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.helm\.sh/resource-policy}{"\n"}{end}'
+```
+
+Expected: exactly 6 rows, each ending in `keep`. **Any blank second column or
+fewer than 6 rows means stop — do not run the upgrade below.**
+
+- [ ] **Step 3c: Upgrade the chart**
+
+```sh
 helm upgrade cert-manager jetstack/cert-manager --kube-context local-k3s \
   -n cert-manager --version v1.21.2 \
   --set crds.enabled=false --set crds.keep=true \
   --wait --timeout 10m
 ```
+
+Expected: `STATUS: deployed`, `REVISION` one higher than the revision Task 10
+Step 4 produced.
 
 - [ ] **Step 4: Repeat the webhook admission probe**
 
@@ -1185,7 +1610,8 @@ kubectl --context local-k3s get certificates -A
 Expected: same 4 `True`.
 
 `cert-manager/install-crd.sh` and `cert-manager/README.md` were both updated and
-committed in Phase A (`3f1ae20`). **Do not rewrite either.** Confirm they are
+committed in Phase A (`3f1ae20`, with `79623af` later hardening the script).
+**Do not rewrite either.** Confirm they are
 present, unmodified, and consistent with what Step 3 just applied. Check their
 histories **separately** — the two diverge from here on, and `git log -1` over a
 combined pathspec reports only whichever was touched most recently, hiding the
@@ -1199,15 +1625,23 @@ grep -n "v1\.21\.2\|crds\.enabled\|crds\.keep" cert-manager/install-crd.sh
 grep -n "v1\.21\.2\|install-crd.sh" cert-manager/README.md
 ```
 
-Expected: no `git status` output. For `install-crd.sh`, most recent commit
-`3f1ae20`. For `README.md`, `3f1ae20` **or** the Task 7 Step 5 commit that
-recorded the known-failing certificate — Task 7 runs before this task and
-legitimately appends a "Known issues" section to this file, so a newer commit
-here is correct, not a problem. **Do not halt on it**; the cert-manager upgrade
-in Step 3 has already been applied by this point, and stopping on a false alarm
-leaves it half-verified.
+Expected: no `git status` output.
 
-Also expected: the script pinning `v1.21.2` with `crds.enabled=false` and
+For `install-crd.sh`, the most recent commit is `79623af` (`set -euo pipefail` and
+a shebang, so a failed CRD apply can no longer fall through to the chart install)
+— or a later reviewed fix. `3f1ae20` is the commit that wrote the file's *content*
+and is no longer the tip.
+
+For `README.md`, expect **the Task 7 Step 5 commit** (`record long-failing
+truelist staging certificate`). Task 7 runs before this task and *always* appends
+a "Known issues" section to this file and commits it, so that is the commit that
+will be on top — not `3f1ae20`. Seeing `3f1ae20` instead means Task 7 Step 5 did
+not commit; note it as a gap to follow up, but **do not halt on either answer**.
+The cert-manager upgrade in Step 3c has already been applied by this point, and
+stopping on a bookkeeping mismatch leaves it half-verified.
+
+Also expected: the script starting with a shebang and `set -euo pipefail`, pinning
+`v1.21.2` with `crds.enabled=false` and
 `crds.keep=true`, and the README attributing that version to `install-crd.sh`
 rather than asserting what is live in the cluster. That distinction is
 deliberate — prose that claims a running version goes stale silently. If you want
@@ -1231,7 +1665,7 @@ git status --porcelain -- cert-manager/install-crd.sh cert-manager/README.md
 
 Expected: no `git status` output, then both snapshot sets deleted.
 
-**Rollback trigger:** same as Task 10. Recovery: `helm rollback cert-manager <prev-rev> -n cert-manager`, else snapshot rollback.
+**Rollback trigger:** same as Task 10 — the webhook probe fails, any previously-`True` certificate goes `False`, or `letsencrypt-prod` stops being `Ready`. Recovery: `helm rollback cert-manager <prev-rev> --kube-context local-k3s -n cert-manager`, where `<prev-rev>` is the revision Task 10 Step 4 produced (`helm --kube-context local-k3s history cert-manager -n cert-manager` to read it); else `./proxmox/snapshot-cluster.sh rollback pre-certmanager-121`. As in Task 10, the CRDs survive the Helm rollback because the chart never managed them, not because of `crds.keep=true`.
 
 ---
 
@@ -1323,11 +1757,25 @@ kubectl --context local-k3s get svc -A -o json | jq -r '.items[]|select(.spec.ty
 diff <(sort /tmp/baseline-lb.txt) /tmp/post-k3s-lb.txt && echo "ALL 5 LB IPs UNCHANGED"
 kubectl --context local-k3s get ingress -A
 kubectl --context local-k3s get certificates -A
-kubectl --context local-k3s get pods -A --field-selector=status.phase!=Succeeded | grep -vE "Running|Completed" || echo "no unhealthy pods"
 curl -s -o /dev/null -w "traefik -> HTTP %{http_code}\n" --max-time 10 http://192.168.20.1/
 ```
 
-Expected: all 4 nodes `v1.29.15+k3s1` and `Ready`; `ALL 5 LB IPs UNCHANGED`; 6 Ingresses on `192.168.20.1`; the same 4 `True` certificates; `no unhealthy pods`; traefik answering.
+The pod check needs separating from its own success message. Four nodes have just
+had their k3s binary replaced, so `| grep -vE "Running|Completed" || echo "no
+unhealthy pods"` prints the reassuring string both when every pod is healthy and
+when the API server never answered — in the acceptance test for a k3s upgrade,
+those two must not look alike:
+
+```sh
+kubectl --context local-k3s get --raw /readyz >/dev/null || echo "ABORT: API not answering -- that is itself an acceptance-test failure"
+if pods=$(kubectl --context local-k3s get pods -A --field-selector=status.phase!=Succeeded); then
+  printf '%s\n' "$pods" | awk 'NR>1 && $4 != "Running" && $4 != "Completed" { n++; print } END { if (!n) print "no unhealthy pods" }'
+else
+  echo "ABORT: cannot list pods -- do NOT read this as 'no unhealthy pods'"
+fi
+```
+
+Expected: all 4 nodes `v1.29.15+k3s1` and `Ready`; `ALL 5 LB IPs UNCHANGED`; 6 Ingresses on `192.168.20.1`; the same 4 `True` certificates; `no unhealthy pods` with no `ABORT` above it; traefik answering.
 
 - [ ] **Step 7: Confirm the Proxmox host monitoring still reports**
 
@@ -1376,7 +1824,7 @@ At the end of Task 12:
 - Tailscale operator, MetalLB and cert-manager are current
 - k3s is patch-current on 1.29 and the upgrade mechanism is validated
 - klipper/MetalLB conflict resolved, clearing 5 of the 6 firing warning groups
-- Velero covers ~25 namespaces instead of 6
+- Velero covers ~25 namespaces instead of 6 — **namespaced objects only.** `includeClusterResources` is left unset, and Velero's auto-rule only defaults it to true when the backup is unrestricted; a non-empty `excludedNamespaces` keeps it false. So cluster-scoped objects — CRDs, ClusterRoles/Bindings, StorageClasses, ClusterIssuers, PVs — are still **not** backed up, and the snapshot set remains the only thing covering them. Setting `includeClusterResources: true` is a separate decision with its own restore implications.
 - Two secrets (Slack webhook, Tailscale OAuth) are out of Helm values
 - k3s configuration is declarative and survives reinstalls
 
