@@ -1,0 +1,210 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: proxmox-host-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus-stack
+    role: alert-rules
+    app: proxmox-host
+spec:
+  groups:
+    # ---------------------------------------------------------------------
+    # ZFS pool state.
+    # zpool_* metrics come from a textfile collector on the pve host
+    # (/usr/local/bin/zfs-textfile-collector.sh), because node_exporter's
+    # built-in zfs collector reads /proc/spl/kstat/zfs and does NOT expose
+    # pool health. Do not replace these with node_zfs_* metrics.
+    # ---------------------------------------------------------------------
+    - name: proxmox-zfs
+      rules:
+        - alert: ZpoolDegraded
+          expr: zpool_health > 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ZFS pool {{ $labels.pool }} is not ONLINE on {{ $labels.node }}"
+            description: >-
+              zpool_health={{ $value }}
+              (0=ONLINE 1=DEGRADED 2=FAULTED 3=OFFLINE/REMOVED/UNAVAIL 4=UNKNOWN).
+              Pool {{ $labels.pool }} has lost redundancy or a device.
+              Run 'zpool status -v {{ $labels.pool }}' on {{ $labels.node }}.
+              If a device shows UNAVAIL with a stale path, the fix is
+              'zpool export' + 'zpool import -d /dev/disk/by-id' — NOT zpool replace.
+
+        - alert: ZpoolDeviceErrors
+          expr: zpool_device_errors > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ZFS {{ $labels.type }} errors on {{ $labels.device }} ({{ $labels.pool }})"
+            description: >-
+              {{ $value }} cumulative {{ $labels.type }} errors on device
+              {{ $labels.device }} in pool {{ $labels.pool }}.
+              Check 'zpool status -v {{ $labels.pool }}' and SMART data.
+              Clear with 'zpool clear' only after establishing the cause.
+
+        - alert: ZpoolCapacityCritical
+          expr: zpool_capacity_percent >= 90
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ZFS pool {{ $labels.pool }} is {{ $value }}% full"
+            description: >-
+              Pool {{ $labels.pool }} is at {{ $value }}% capacity. ZFS write
+              performance degrades severely past 80% and fragmentation rises.
+              Free space or add capacity.
+
+        - alert: ZpoolCapacityHigh
+          expr: zpool_capacity_percent >= 80
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "ZFS pool {{ $labels.pool }} is {{ $value }}% full"
+            description: >-
+              Pool {{ $labels.pool }} has crossed the 80% mark where ZFS
+              allocation performance begins to degrade.
+
+        - alert: ZpoolScrubOverdue
+          expr: zpool_scrub_age_seconds > 3888000
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "ZFS pool {{ $labels.pool }} has not been scrubbed in 45+ days"
+            description: >-
+              Last scrub/resilver was {{ $value | humanizeDuration }} ago.
+              Scheduled scrubs run the 2nd Sunday monthly via
+              /etc/cron.d/zfsutils-linux — check that cron and the pool are healthy.
+
+        - alert: ZpoolNeverScrubbed
+          expr: zpool_health unless on(pool) zpool_scrub_age_seconds
+          for: 24h
+          labels:
+            severity: warning
+          annotations:
+            summary: "ZFS pool {{ $labels.pool }} has never completed a scrub"
+            description: >-
+              No scrub or resilver completion recorded for {{ $labels.pool }}.
+              Expected for a newly created pool until the first scheduled scrub.
+
+        - alert: ZfsCollectorStale
+          expr: time() - zpool_collector_last_run_timestamp_seconds > 1800
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "ZFS textfile collector on {{ $labels.node }} is stale"
+            description: >-
+              zpool_* metrics are {{ $value | humanizeDuration }} old. The
+              prometheus-zfs.timer should run every 5 minutes. Pool health
+              alerts are UNRELIABLE while this is firing.
+              Check 'systemctl status prometheus-zfs.timer' on {{ $labels.node }}.
+
+    # ---------------------------------------------------------------------
+    # Physical device health (SMART / NVMe), from the packaged
+    # prometheus-node-exporter-collectors smartmon + nvme timers.
+    # ---------------------------------------------------------------------
+    - name: proxmox-disks
+      rules:
+        - alert: SmartDeviceUnhealthy
+          expr: smartmon_device_smart_healthy == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "SMART self-assessment FAILED for {{ $labels.disk }}"
+            description: >-
+              Device {{ $labels.disk }} reports SMART overall-health FAILED.
+              This usually precedes imminent failure — plan replacement now.
+
+        - alert: NvmeCriticalWarning
+          expr: nvme_critical_warning_total > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "NVMe {{ $labels.device }} reports a critical warning"
+            description: >-
+              nvme_critical_warning_total={{ $value }} for {{ $labels.device }}.
+              Check 'smartctl -a /dev/{{ $labels.device }}'.
+
+        - alert: NvmeMediaErrors
+          expr: increase(nvme_media_errors_total[1h]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "NVMe {{ $labels.device }} logged new media errors"
+            description: >-
+              {{ $value }} new media/data-integrity errors in the last hour on
+              {{ $labels.device }}. ZFS may be repairing these silently.
+
+        - alert: NvmeSpareLow
+          expr: nvme_available_spare_ratio <= nvme_available_spare_threshold_ratio
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "NVMe {{ $labels.device }} available spare below threshold"
+            description: >-
+              Available spare blocks have fallen to the vendor threshold on
+              {{ $labels.device }}. Replace this drive.
+
+        - alert: NvmeWearHigh
+          expr: nvme_percentage_used_ratio >= 0.8
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "NVMe {{ $labels.device }} at {{ $value | humanizePercentage }} rated write endurance"
+            description: >-
+              Drive {{ $labels.device }} has consumed
+              {{ $value | humanizePercentage }} of rated endurance. Note that
+              mirrored drives of the same age/model wear in step — stagger
+              replacements rather than replacing both at once.
+
+        - alert: DiskPendingSectors
+          expr: smartmon_current_pending_sector_raw_value > 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.disk }} has {{ $value }} pending sectors"
+            description: >-
+              Sectors awaiting reallocation on {{ $labels.disk }} indicate
+              unreadable data. On a single-disk pool this risks data loss.
+
+        - alert: DiskReallocatedSectors
+          expr: smartmon_reallocated_sector_ct_raw_value > 0
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.disk }} has {{ $value }} reallocated sectors"
+            description: >-
+              Growing reallocated-sector counts indicate media degradation on
+              {{ $labels.disk }}.
+
+    # ---------------------------------------------------------------------
+    # Reachability. NOTE: this cannot detect total host failure, because
+    # Prometheus itself runs in VMs hosted by this machine. See the
+    # dead-man's-switch note in the design doc.
+    # ---------------------------------------------------------------------
+    - name: proxmox-host-up
+      rules:
+        - alert: ProxmoxHostExporterDown
+          expr: up{job="proxmox-host"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Cannot scrape node_exporter on the Proxmox host"
+            description: >-
+              Target {{ $labels.instance }} is down. All ZFS pool health and
+              SMART alerting is BLIND while this is firing. Check
+              'systemctl status prometheus-node-exporter' on pve.

@@ -1,0 +1,9 @@
+[Unit]
+Description=Collect ZFS pool state metrics for node_exporter textfile collector
+Documentation=https://github.com/prometheus/node_exporter
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zfs-textfile-collector.sh
+Nice=10
+IOSchedulingClass=idle
