@@ -43,9 +43,35 @@ immich:
       template: "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"
     machineLearning:
       # Disabled for the bulk import; re-enabled in Task 11.
+      # All four default to true in v3.2.0's config.dto.js. ocr in particular
+      # runs CPU-only inference on every asset, and there is no GPU here.
       clip:
         enabled: false
       facialRecognition:
+        enabled: false
+      ocr:
+        enabled: false
+      duplicateDetection:
+        enabled: false
+    backup:
+      database:
+        # Default true: writes a nightly pg_dump at 02:00 into /data/backups,
+        # which is immich-library — the one volume deliberately excluded from
+        # Velero because Google Photos is the backup. A recovery path on an
+        # un-backed-up volume looks like safety without being it, and it puts
+        # write load on an SMR disk. immich-pgdump is the single documented path.
+        enabled: false
+    job:
+      # Library lives on a Seagate ST8000DM004 (SMR, ~15ms avg read wait)
+      # over NFS. Default 3 turns thumbnailing into random-write thrash.
+      thumbnailGeneration:
+        concurrency: 1
+    integrityChecks:
+      # missingFiles and untrackedFiles are cheap metadata comparisons and stay
+      # on. checksumFiles at the default percentageLimit 1.0 re-reads the entire
+      # library nightly at 03:00 under a 1h cap it cannot meet on SMR over NFS,
+      # so it grinds every night and never completes.
+      checksumFiles:
         enabled: false
 
 valkey:
