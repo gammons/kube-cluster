@@ -24,22 +24,11 @@ controllers:
       main:
         image:
           tag: v3.2.0
+        # DB_* deliberately NOT set here: this block fans out to every
+        # component. Postgres credentials live under `server` only.
         env:
           REDIS_HOSTNAME: immich-valkey.immich.svc.cluster.local
           IMMICH_MACHINE_LEARNING_URL: http://immich-machine-learning.immich.svc.cluster.local:3003
-          DB_HOSTNAME: immich-postgres.immich.svc.cluster.local
-          DB_PORT: "5432"
-          DB_DATABASE_NAME: immich
-          DB_USERNAME:
-            valueFrom:
-              secretKeyRef:
-                name: immich-postgres
-                key: POSTGRES_USER
-          DB_PASSWORD:
-            valueFrom:
-              secretKeyRef:
-                name: immich-postgres
-                key: POSTGRES_PASSWORD
 
 immich:
   metrics:
@@ -61,6 +50,19 @@ immich:
 
 valkey:
   enabled: true
+  controllers:
+    main:
+      containers:
+        main:
+          # Without these valkey is BestEffort QoS, making it the first pod
+          # evicted under node pressure — and it holds the Immich job queue.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
   persistence:
     data:
       enabled: true
@@ -80,6 +82,23 @@ server:
           backup.velero.io/backup-volumes-excludes: data
       containers:
         main:
+          # Scoped to the server: machine-learning parses untrusted uploaded
+          # files and has no Postgres client library, so it must not hold
+          # these credentials. Valkey never uses them either.
+          env:
+            DB_HOSTNAME: immich-postgres.immich.svc.cluster.local
+            DB_PORT: "5432"
+            DB_DATABASE_NAME: immich
+            DB_USERNAME:
+              valueFrom:
+                secretKeyRef:
+                  name: immich-postgres
+                  key: POSTGRES_USER
+            DB_PASSWORD:
+              valueFrom:
+                secretKeyRef:
+                  name: immich-postgres
+                  key: POSTGRES_PASSWORD
           resources:
             requests:
               cpu: "1"
