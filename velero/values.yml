@@ -36,3 +36,4 @@ schedules:
         - openclaw
         - openclaw-dottie
         - openclaw-stonk
+        - immich
