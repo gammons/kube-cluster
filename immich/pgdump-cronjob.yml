@@ -1,0 +1,78 @@
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: immich-pgdump
+  namespace: immich
+spec:
+  schedule: "0 4 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          dnsConfig:
+            options:
+              - name: ndots
+                value: "1"
+          containers:
+            - name: pgdump
+              image: ghcr.io/immich-app/postgres:17-vectorchord1.1.1
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: PGHOST
+                  value: immich-postgres.immich.svc.cluster.local
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: immich-postgres
+                      key: POSTGRES_USER
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: immich-postgres
+                      key: POSTGRES_PASSWORD
+                - name: PGDATABASE
+                  valueFrom:
+                    secretKeyRef:
+                      name: immich-postgres
+                      key: POSTGRES_DB
+              command:
+                # bash, not sh: the image's /bin/sh is dash, which has no
+                # `set -o pipefail`. pipefail is required so a failing pg_dump
+                # piped into gzip fails the job instead of writing a short file.
+                - /bin/bash
+                - -c
+                - |
+                  set -euo pipefail
+                  STAMP=$(date +%Y%m%d-%H%M%S)
+                  OUT="/dumps/immich-${STAMP}.sql.gz"
+                  echo "dumping to ${OUT}"
+                  pg_dump --clean --if-exists | gzip -c > "${OUT}"
+                  # Fail loudly if the dump is suspiciously small.
+                  SIZE=$(stat -c %s "${OUT}")
+                  echo "dump size: ${SIZE} bytes"
+                  if [ "${SIZE}" -lt 10240 ]; then
+                    echo "ERROR: dump smaller than 10KiB, treating as failure" >&2
+                    exit 1
+                  fi
+                  find /dumps -name 'immich-*.sql.gz' -mtime +14 -delete
+                  echo "done"
+              volumeMounts:
+                - name: dumps
+                  mountPath: /dumps
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: "1"
+                  memory: 1Gi
+          volumes:
+            - name: dumps
+              persistentVolumeClaim:
+                claimName: immich-pgdump
