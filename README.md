@@ -31,7 +31,9 @@ There is no `/etc/rancher/k3s/config.yaml` on any node -- all configuration is d
 
 ### Controller Node Configuration
 
-The controller is dedicated to running only the k3s server (API server, etcd, controller-manager, scheduler). No workloads should run on it.
+The controller is dedicated to running only the k3s server (API server, datastore, controller-manager, scheduler). No workloads should run on it.
+
+`k3s server` runs with no arguments, so the datastore is the default embedded **SQLite** (kine), not etcd. There is therefore no `etcd-snapshot` mechanism to back the cluster up with -- backups come from Proxmox VM snapshots instead (see `proxmox/README.md`).
 
 **Taints:**
 - `node-role.kubernetes.io/control-plane:NoExecute` -- evicts all pods that don't explicitly tolerate it
