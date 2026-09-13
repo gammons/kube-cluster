@@ -34,7 +34,12 @@ case "$LABEL" in
   -*) echo "label must not start with '-' (it would be parsed as an option)" >&2; exit 2 ;;
 esac
 
-r() { ssh -o BatchMode=yes "$PVE" "$@"; }
+# ConnectTimeout is not optional. rollback's stop-wait loop runs 4 of these per
+# iteration, and it runs at the one moment the host is least likely to answer:
+# all 4 VMs already stopped, mid-incident. Without it a half-open TCP connection
+# hangs for the kernel's SYN retry budget (~2min each), so a "60s" bound becomes
+# hours with every VM powered off. 10s is generous for a LAN host.
+r() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$PVE" "$@"; }
 
 # Snapshot names on VM $1, one per line. qm listsnapshot draws a tree:
 #   `-> pre-metallb          2026-09-13 07:00:00     cluster gate pre-metallb
@@ -118,12 +123,37 @@ case "$ACTION" in
     }
     echo "OK: label '$LABEL' is free on all 4 VMs and ${DATASET}"
     echo "== snapshotting VMs (guest agent quiesces the filesystem) =="
+    # A failure part way through leaves a partial set, which is not a gate: a
+    # later 'rollback' would refuse it, and an operator who did not read this far
+    # up the scrollback would proceed with the change believing it was covered.
+    # Say so explicitly, and name the exact state, as rollback does.
+    SNAPPED=""
     for id in $VMS; do
       echo "-- VM $id"
-      r "qm snapshot $id $LABEL --description 'cluster gate $LABEL'"
+      r "qm snapshot $id $LABEL --description 'cluster gate $LABEL'" || {
+        NOTSNAPPED=""
+        for j in $VMS; do
+          case " $SNAPPED " in *" vm$j "*) ;; *) NOTSNAPPED="$NOTSNAPPED vm$j" ;; esac
+        done
+        echo "FAILED: snapshot of VM $id failed. A PARTIAL set now exists:" >&2
+        echo "        snapshotted:${SNAPPED:- none}" >&2
+        echo "        NOT snapshotted:$NOTSNAPPED" >&2
+        echo "        ${DATASET}: NOT snapshotted" >&2
+        echo "        The VMs are all still running; nothing was changed." >&2
+        echo "        A partial set is NOT a gate -- do not proceed with the change" >&2
+        echo "        it was meant to cover. Recovery: remove the partial set with" >&2
+        echo "        '$0 delete $LABEL', fix VM $id, then re-run create." >&2
+        exit 1
+      }
+      SNAPPED="$SNAPPED vm$id"
     done
     echo "== snapshotting NFS dataset =="
-    r "zfs snapshot ${DATASET}@${LABEL}"
+    r "zfs snapshot ${DATASET}@${LABEL}" || {
+      echo "FAILED: all 4 VMs are snapshotted but ${DATASET} is NOT." >&2
+      echo "        The 15 nfs PVCs are outside this set, so it is not a usable" >&2
+      echo "        gate. Recovery: '$0 delete $LABEL', then re-run create." >&2
+      exit 1
+    }
     echo "OK: snapshot set '$LABEL' created"
     ;;
   list)
@@ -153,7 +183,10 @@ case "$ACTION" in
     # rollback loop part way and produce exactly the split state the pre-flight
     # above exists to prevent. Verify, with an explicit bound.
     echo "-- confirming all VMs are stopped (up to ${STOP_WAIT}s)"
-    waited=0
+    # Bound on wall-clock, not on iterations. Counting 'sleep 3' alone would make
+    # ${STOP_WAIT} a count of 20 loops rather than 60 seconds, and each loop also
+    # spends up to 4 x ConnectTimeout in ssh when the host is struggling.
+    started=$SECONDS
     while :; do
       RUNNING=""
       for id in $VMS; do
@@ -162,14 +195,13 @@ case "$ACTION" in
         [ "$state" = "stopped" ] || RUNNING="$RUNNING vm$id(${state:-unknown})"
       done
       [ -n "$RUNNING" ] || break
-      [ "$waited" -lt "$STOP_WAIT" ] || {
+      [ "$((SECONDS - started))" -lt "$STOP_WAIT" ] || {
         echo "ABORT: still not stopped after ${STOP_WAIT}s:$RUNNING" >&2
         echo "       Nothing has been rolled back. Stop those VMs by hand, then" >&2
         echo "       re-run; rolling back a running VM fails mid-set." >&2
         exit 1
       }
       sleep 3
-      waited=$((waited + 3))
     done
     echo "OK: all 4 VMs stopped"
     echo "== rolling back =="
@@ -198,7 +230,21 @@ case "$ACTION" in
       echo "        and re-run rollback '$LABEL' once the dataset can be rolled back." >&2
       exit 1
     }
-    r "systemctl restart nfs-server"
+    # Unguarded, this would exit 0 under -e only by luck: a failure here leaves
+    # every VM stopped and the operator told nothing, right after the one command
+    # in the script that cannot be undone. Clients hold NFS file handles across
+    # the rollback, so without the restart the nfs PVCs fail with ESTALE.
+    r "systemctl restart nfs-server" || {
+      echo "FAILED: all 4 VMs and ${DATASET} rolled back, but nfs-server did not" >&2
+      echo "        restart. Clients hold stale handles across a rollback, so the" >&2
+      echo "        15 nfs PVCs will fail with ESTALE until it does. The rollback" >&2
+      echo "        itself succeeded; all 4 VMs are still STOPPED." >&2
+      echo "        Recovery: ssh $PVE 'systemctl restart nfs-server', then start" >&2
+      echo "        the VMs by hand -- 'qm start 100', wait ~45s for the API, then" >&2
+      echo "        'qm start 101', '102', '103'. Do not re-run rollback: the" >&2
+      echo "        rollback is already done and repeating it is not the fix." >&2
+      exit 1
+    }
     echo "-- starting controller first"
     r "qm start 100"; sleep 45
     for id in 101 102 103; do r "qm start $id"; sleep 5; done
