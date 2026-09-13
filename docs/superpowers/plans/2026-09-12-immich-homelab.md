@@ -331,8 +331,6 @@ spec:
             - secretRef:
                 name: immich-postgres
           env:
-            - name: PGDATA
-              value: /var/lib/postgresql/data/pgdata
             - name: DB_STORAGE_TYPE
               value: "__DB_STORAGE_TYPE__"
           volumeMounts:
@@ -361,7 +359,9 @@ spec:
             claimName: immich-postgres-data
 ```
 
-`PGDATA` points at a subdirectory rather than the mount root because the volume root may contain a `lost+found`, which makes `initdb` refuse to run.
+**Do not override `PGDATA`.** The image bakes in `PGDATA=/var/lib/postgresql/data` and uses a custom entrypoint (`immich-docker-entrypoint.sh`) plus a custom config at `/etc/postgresql/postgresql.conf` — that config is what preloads `vchord.so`. The usual reason to relocate `PGDATA` to a subdirectory is a `lost+found` on a freshly formatted block device; `local-path` volumes are bind-mounted directories and have none, so the override would add risk against a custom entrypoint for no benefit.
+
+`fsGroup: 999` is belt-and-braces only — the image has no `USER` directive, so it starts as root and drops privileges itself.
 
 The `backup.velero.io/backup-volumes-excludes: data` annotation is present from the start, per the spec — a filesystem copy of a live Postgres is not reliably restorable.
 
