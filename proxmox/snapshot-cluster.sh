@@ -94,7 +94,17 @@ survey() {
 case "$ACTION" in
   create)
     echo "== pre-flight =="
-    r "zpool status -x" | grep -q "all pools are healthy" || { echo "ABORT: a pool is unhealthy"; exit 1; }
+    # Captured into a variable rather than piped into grep -q. Under pipefail,
+    # grep -q exits the moment it matches, which can SIGPIPE the ssh upstream and
+    # fail the pipeline *because* it matched -- a spurious abort on a healthy
+    # pool. Same hazard vm_status() avoids by ending in awk. Testing a variable
+    # races nothing, and the message can now say which case it was: an ssh
+    # failure yields an empty string, an unhealthy pool yields zpool's report.
+    pools=$(r "zpool status -x") || true
+    case "$pools" in
+      *"all pools are healthy"*) ;;
+      *) echo "ABORT: pool health check failed: $pools"; exit 1 ;;
+    esac
     for id in $VMS; do
       r "qm agent $id ping" >/dev/null 2>&1 \
         || { echo "ABORT: qemu-guest-agent not responding on VM $id (snapshot would be crash-consistent)"; exit 1; }
