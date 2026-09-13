@@ -39,6 +39,20 @@ spec:
             summary: "Immich pg_dump has not succeeded in 48h"
             description: "The nightly database dump is the only recovery path for Immich's database. Check `kubectl -n immich get jobs`."
 
+        # Companion to ImmichPgDumpFailed above. That alert compares against
+        # kube_cronjob_status_last_successful_time, so when the series is ABSENT
+        # (CronJob deleted, never succeeded, or kube-state-metrics not exporting)
+        # it evaluates to an empty vector and stays silent forever. This catches
+        # that blind spot.
+        - alert: ImmichPgDumpMissing
+          expr: absent(kube_cronjob_status_last_successful_time{namespace="immich", cronjob="immich-pgdump"})
+          for: 6h
+          labels:
+            severity: critical
+          annotations:
+            summary: "Immich pg_dump CronJob is missing or has never succeeded"
+            description: "No successful-run metric exists for the immich-pgdump CronJob. It may have been deleted, or may never have completed a successful run. This dump is the ONLY recovery path for the Immich database - Velero deliberately excludes the Postgres data directory. Check `kubectl --context local-k3s -n immich get cronjob,jobs`. Note: after a genuine delete-and-recreate this fires until the first scheduled 04:00 run completes."
+
         - alert: ImmichLibraryVolumeFilling
           expr: |
             (
