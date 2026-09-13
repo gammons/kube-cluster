@@ -1,0 +1,13 @@
+# Tailscale operator values.
+#
+# oauth.clientId / oauth.clientSecret are deliberately NOT set here. The chart
+# would render them into the operator-oauth Secret in plaintext, which cannot be
+# committed. That Secret is managed out-of-band instead:
+#
+#   kubectl create secret generic operator-oauth -n tailscale \
+#     --from-literal=client_id='...' --from-literal=client_secret='...'
+#
+# The operator reads the Secret directly, so omitting the values is safe as long
+# as the Secret exists before install or upgrade.
+operatorConfig:
+  logging: info
