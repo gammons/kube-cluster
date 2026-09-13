@@ -41,26 +41,33 @@
 
 ## File Structure
 
+> **All of these files are already written and committed** (Phase A). This plan's
+> remaining work is the live cluster operations. Where a task previously said
+> "create/modify X", it now says "verify the committed X" and points at the
+> commit. **Do not re-author any of them from this document** — the repo is the
+> source of truth, and a copy here would drift. The one exception is Task 7
+> Step 4, which appends a "Known issues" section to `cert-manager/README.md`
+> using values that can only be read from the live cluster.
+
 | File | Responsibility |
 |---|---|
 | `proxmox/snapshot-cluster.sh` | Create/list/rollback/delete the snapshot set (4 VMs + NFS dataset) as one unit |
-| `proxmox/README.md` | Add a "Cluster snapshots" section documenting the script |
+| `proxmox/README.md` | "Cluster snapshots" section documenting the script |
 | `k3s/config.yaml` | Declarative k3s server config (`disable: servicelb`, persistent control-plane taint) |
 | `k3s/README.md` | How k3s is configured and upgraded |
-| `velero/values.yml` | Widen `includedNamespaces` |
+| `velero/values.yml` | Backup schedule, deny-list (`excludedNamespaces`) rather than allow-list |
 | `tailscale/values.yml` | Tailscale operator values, secret-free |
-| `tailscale/README.md` | Install/upgrade, and why the OAuth secret is not in git |
-| `metallb/README.md` | Bump documented manifest version |
-| `cert-manager/install-crd.sh` | Bump documented version, switch `installCRDs` → `crds.enabled` |
-| `cert-manager/README.md` | Current version, webhook admission probe, known-failing cert |
+| `tailscale/README.md` | Install/upgrade, why the OAuth secret is not in git, and the `helm.sh/resource-policy=keep` requirement |
+| `metallb/README.md` | Manifest URL (`v0.16.1`) and config filename |
+| `cert-manager/install-crd.sh` | Pinned version, `crds.enabled`/`crds.keep` instead of `installCRDs` |
+| `cert-manager/README.md` | What `install-crd.sh` installs, webhook admission probe, known-failing cert |
 
 ---
 
 ## Task 0: Shared helpers and preflight
 
-**Files:**
-- Create: `proxmox/snapshot-cluster.sh`
-- Modify: `proxmox/README.md`
+**Files:** none — `proxmox/snapshot-cluster.sh` was authored, reviewed and
+committed in Phase A. This task verifies it; it does not write it.
 
 **Interfaces:**
 - Produces: `snapshot-cluster.sh {create|list|rollback|delete} <label>` — used as the gate by every later task.
@@ -98,103 +105,49 @@ infra/registry 192.168.20.50
 wprb-rocks/wprb-rocks-backend-service 192.168.20.2
 ```
 
-- [ ] **Step 3: Write the snapshot script**
+- [ ] **Step 3: Verify the committed snapshot script**
 
-Create `proxmox/snapshot-cluster.sh`:
-
-```bash
-#!/usr/bin/env bash
-# Snapshot/rollback the whole k3s cluster as one unit.
-#
-# Covers everything: the k3s SQLite datastore and all 23 local-path PVCs live on
-# the VM zvols; all 15 nfs PVCs live on main-pool/k3s-nfs.
-#
-# Velero is NOT a substitute -- it covers 6 of ~31 namespaces.
-#
-# Usage: snapshot-cluster.sh {create|list|rollback|delete} <label>
-set -euo pipefail
-
-PVE=root@192.168.5.1
-VMS="100 101 102 103"
-DATASET=main-pool/k3s-nfs
-ACTION=${1:-}
-LABEL=${2:-}
-
-usage() { echo "usage: $0 {create|list|rollback|delete} <label>" >&2; exit 2; }
-[ -n "$ACTION" ] || usage
-case "$ACTION" in list) ;; *) [ -n "$LABEL" ] || usage ;; esac
-case "$LABEL" in *[!a-zA-Z0-9_-]*) echo "label must be [a-zA-Z0-9_-]" >&2; exit 2 ;; esac
-
-r() { ssh -o BatchMode=yes "$PVE" "$@"; }
-
-case "$ACTION" in
-  create)
-    echo "== pre-flight =="
-    r "zpool status -x" | grep -q "all pools are healthy" || { echo "ABORT: a pool is unhealthy"; exit 1; }
-    for id in $VMS; do
-      r "qm agent $id ping" >/dev/null 2>&1 \
-        || { echo "ABORT: qemu-guest-agent not responding on VM $id (snapshot would be crash-consistent)"; exit 1; }
-    done
-    echo "== snapshotting VMs (guest agent quiesces the filesystem) =="
-    for id in $VMS; do
-      echo "-- VM $id"
-      r "qm snapshot $id $LABEL --description 'cluster gate $LABEL'"
-    done
-    echo "== snapshotting NFS dataset =="
-    r "zfs snapshot ${DATASET}@${LABEL}"
-    echo "OK: snapshot set '$LABEL' created"
-    ;;
-  list)
-    for id in $VMS; do echo "-- VM $id"; r "qm listsnapshot $id"; done
-    echo "-- dataset"; r "zfs list -t snapshot -o name,used,creation -s creation ${DATASET}"
-    ;;
-  rollback)
-    echo "!! rollback discards ALL changes since '$LABEL' on 4 VMs and ${DATASET}"
-    echo "!! VMs will be stopped, rolled back, and restarted."
-    printf "type the label again to confirm: "; read -r c
-    [ "$c" = "$LABEL" ] || { echo "aborted"; exit 1; }
-    for id in $VMS; do r "qm stop $id --timeout 120" || true; done
-    for id in $VMS; do echo "-- rollback VM $id"; r "qm rollback $id $LABEL"; done
-    r "zfs rollback -r ${DATASET}@${LABEL}"
-    r "systemctl restart nfs-server"
-    echo "-- starting controller first"
-    r "qm start 100"; sleep 45
-    for id in 101 102 103; do r "qm start $id"; sleep 5; done
-    echo "OK: rolled back to '$LABEL'. Verify with: kubectl --context local-k3s get nodes"
-    ;;
-  delete)
-    for id in $VMS; do r "qm delsnapshot $id $LABEL" || true; done
-    r "zfs destroy ${DATASET}@${LABEL}" || true
-    echo "OK: snapshot set '$LABEL' deleted"
-    ;;
-  *) usage ;;
-esac
-```
-
-- [ ] **Step 4: Make it executable and confirm it refuses to run (agent not installed yet)**
+`proxmox/snapshot-cluster.sh` was authored and reviewed in Phase A — `16bfb36`
+(initial), `f8afe22` (whole-set pre-flight), `3a11cfe` (verify VMs stopped before
+rollback), `7016922` (pool-health guard no longer races a pipeline). **Do not
+rewrite it.** Read it, then confirm it is present, executable and unmodified:
 
 ```sh
-chmod 755 proxmox/snapshot-cluster.sh
+test -x proxmox/snapshot-cluster.sh && bash -n proxmox/snapshot-cluster.sh && echo "script OK"
+git status --porcelain -- proxmox/snapshot-cluster.sh
+git log --oneline -1 -- proxmox/snapshot-cluster.sh
+```
+
+Expected: `script OK`, no output from `git status` (clean), and the most recent
+commit touching it is `7016922` or a later Phase A/B fix — not a local edit.
+
+Read the file before using it. The behaviour every later task depends on:
+`create` aborts unless all pools are healthy, `qemu-guest-agent` answers on all
+4 VMs, and the label is unused on all 5 targets; `rollback` aborts unless the
+label is present on all 5 targets and every VM has actually stopped; `delete` is
+idempotent but fails loudly if a target refuses to give the snapshot up.
+
+- [ ] **Step 4: Confirm it refuses to run (agent not installed yet)**
+
+```sh
 ./proxmox/snapshot-cluster.sh create preflight-check
 ```
 
 Expected: `ABORT: qemu-guest-agent not responding on VM 100`.
 This is the correct pre-change state — the guard works, and Task 1 installs the agent.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Nothing to commit**
+
+The script is already committed (Phase A). Confirm the working tree is clean for
+it rather than attempting a commit — `git commit` with nothing staged exits
+non-zero and would fail the task:
 
 ```sh
-git add proxmox/snapshot-cluster.sh
-git commit -m "add cluster snapshot helper for upgrade gates
-
-Snapshots all 4 k3s VMs plus main-pool/k3s-nfs as one unit. Together these
-capture the k3s sqlite datastore, all 23 local-path PVCs and all 15 nfs PVCs.
-Velero is not a substitute -- it covers 6 of ~31 namespaces.
-
-Refuses to run unless every pool is healthy and qemu-guest-agent answers on
-every VM, so a snapshot is never silently crash-consistent." \
-  -- proxmox/snapshot-cluster.sh
+git status --porcelain -- proxmox/snapshot-cluster.sh
 ```
+
+Expected: no output. If there *is* output, something edited the script locally —
+investigate before proceeding; every later gate depends on it.
 
 **Rollback trigger:** none — nothing changed yet.
 
@@ -303,7 +256,8 @@ Expected: `OK: snapshot set 'agent-verify' created` then `OK: ... deleted`.
 
 An untested rollback is an assumption, not a safety net. Everything after this task depends on it.
 
-**Files:** `proxmox/README.md` (add "Cluster snapshots" section)
+**Files:** none — the "Cluster snapshots" section of `proxmox/README.md` was
+committed in Phase A. This task verifies it.
 
 **Interfaces:**
 - Consumes: working guest agent (Task 1).
@@ -361,48 +315,33 @@ diff <(sort /tmp/baseline-lb.txt) /tmp/after-lb.txt && echo "LB IPs unchanged"
 
 Expected: `LB IPs unchanged`.
 
-- [ ] **Step 6: Delete the test snapshot and document**
+- [ ] **Step 6: Delete the test snapshot**
 
 ```sh
 ./proxmox/snapshot-cluster.sh delete rollbacktest
 ```
 
-Add to `proxmox/README.md`:
+- [ ] **Step 7: Verify the committed documentation**
 
-```markdown
-## Cluster snapshots
-
-`snapshot-cluster.sh` snapshots all 4 k3s VMs plus `main-pool/k3s-nfs` as one
-unit — together they hold the k3s SQLite datastore, all 23 `local-path` PVCs and
-all 15 `nfs` PVCs. Velero covers only 6 of ~31 namespaces and is not a substitute.
+The **Cluster snapshots** section of `proxmox/README.md` was written and
+committed in Phase A (`0526b27`). **Do not rewrite it.** Confirm it is present
+and unmodified:
 
 ```sh
-./snapshot-cluster.sh create  pre-<change>    # gate before any upgrade
-./snapshot-cluster.sh list
-./snapshot-cluster.sh rollback pre-<change>   # stops, reverts and restarts all 4 VMs
-./snapshot-cluster.sh delete  pre-<change>    # once the change is confirmed good
+git status --porcelain -- proxmox/README.md
+git log --oneline -1 -- proxmox/README.md
+grep -n "^## Cluster snapshots" proxmox/README.md
 ```
 
-`create` refuses to run unless every ZFS pool is healthy and `qemu-guest-agent`
-answers on all 4 VMs, so snapshots are never silently crash-consistent.
+Expected: no `git status` output, most recent commit `0526b27`, and the heading
+found.
 
-Verified end-to-end on 2026-09-13: canary files written to both a VM disk and the
-NFS dataset were correctly discarded by `rollback`.
-
-**Delete snapshots once a change is confirmed.** They are copy-on-write, so cost
-grows with divergence; leaving them indefinitely consumes `main-pool`.
-```
-
-- [ ] **Step 7: Commit**
-
-```sh
-git add proxmox/README.md
-git commit -m "document verified cluster snapshot and rollback procedure
-
-Rollback tested end-to-end: canary files on both a VM disk and the NFS dataset
-were correctly discarded, LoadBalancer IPs unchanged, all 4 nodes returned
-Ready." -- proxmox/README.md
-```
+Then read that section and check it still matches what you just observed —
+`create`'s pre-flight, the label rules, `rollback`'s all-or-nothing behaviour.
+It deliberately makes **no claim that rollback has been verified end-to-end**,
+because until this task runs, it has not been. If this task's rollback test
+passed, that is worth recording; open a follow-up rather than editing the file
+mid-task, and do not commit anything here.
 
 **Rollback trigger:** n/a — this task *is* the rollback test.
 
@@ -453,7 +392,8 @@ Expected: `/` ≈ 61G with ~39G available and usage ~34%; node still `Ready,Sche
 
 Velero currently backs up 6 of ~31 namespaces, omitting `monitoring`, `truelist-staging` (MariaDB + Redis), `infra`, `unifi`, `wprb-rocks`, `pmbot` and `cert-manager`. This is a second safety net behind snapshots, not a replacement.
 
-**Files:** Modify `velero/values.yml`
+**Files:** none — `velero/values.yml` was updated and committed in Phase A. This
+task verifies it, then applies it to the cluster.
 
 - [ ] **Step 1: Record the pre-change state**
 
@@ -463,26 +403,25 @@ kubectl --context local-k3s get schedules.velero.io velero-homelab-daily -n vele
 
 Expected: `["home-assistant","dev-box","openclaw","openclaw-dottie","openclaw-stonk","immich"]`
 
-- [ ] **Step 2: Switch to exclusion-based selection**
+- [ ] **Step 2: Verify the committed values file**
 
-Edit `velero/values.yml`, replacing the `includedNamespaces` list under `schedules.homelab-daily.template` with:
+`velero/values.yml` was switched from `includedNamespaces` to
+`excludedNamespaces` in Phase A (`460ab05`). **Do not edit it.** Confirm it is
+present and unmodified, and read the resulting deny-list:
 
-```yaml
-schedules:
-  homelab-daily:
-    schedule: "0 6 * * *"
-    template:
-      ttl: 168h
-      excludedNamespaces:
-        - kube-system
-        - kube-public
-        - kube-node-lease
-        - velero
-        - longhorn-system
-        - signoz
+```sh
+git status --porcelain -- velero/values.yml
+git log --oneline -1 -- velero/values.yml
+grep -n "cludedNamespaces" velero/values.yml
 ```
 
-Everything not listed is now included. `longhorn-system` and `signoz` are excluded because they have been `Terminating` for 2y+ and would only generate errors.
+Expected: no `git status` output, most recent commit `460ab05`, and
+`excludedNamespaces` present with no `includedNamespaces`.
+
+Everything not in that deny-list is now included. `longhorn-system` and `signoz`
+are excluded because they have been `Terminating` for 2y+ and would only generate
+errors. Note the exact list before Step 3 — Step 5 reuses it verbatim in a
+one-off Backup, and the two must match or the verification proves nothing.
 
 - [ ] **Step 3: Apply**
 
@@ -533,19 +472,16 @@ kubectl --context local-k3s get podvolumebackups.velero.io -n velero -o json | \
   jq -r '.items[]|select(.status.phase!="Completed")|"\(.status.phase) \(.spec.pod.namespace)/\(.spec.pod.name) vol=\(.spec.volume) \(.status.message//"")"'
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Nothing to commit**
+
+`velero/values.yml` is already committed (`460ab05`). Confirm the tree is clean
+for it instead of attempting a commit that would have nothing staged:
 
 ```sh
-git add velero/values.yml
-git commit -m "back up all namespaces except infrastructure ones
-
-The schedule covered 6 of ~31 namespaces, omitting monitoring, truelist-staging
-(mariadb and redis), infra, unifi, wprb-rocks, pmbot and cert-manager. Switches
-to exclusion-based selection so new namespaces are covered by default.
-
-longhorn-system and signoz are excluded because both have been Terminating for
-2y+ and would only produce errors." -- velero/values.yml
+git status --porcelain -- velero/values.yml
 ```
+
+Expected: no output.
 
 **Rollback trigger:** backup phase is `Failed` (not `PartiallyFailed`), or runtime exceeds 60 minutes. Recovery: `helm rollback velero 2 -n velero`.
 
@@ -613,7 +549,9 @@ Expected: no rows.
 
 MetalLB performs the actual IP assignment, so klipper is redundant.
 
-**Files:** Create `k3s/config.yaml`, `k3s/README.md`
+**Files:** none — `k3s/config.yaml` and `k3s/README.md` were authored and
+committed in Phase A. This task verifies them, then installs `config.yaml` on
+the controller.
 
 **Interfaces:**
 - Produces: `--disable=servicelb` in effect; 5 `svclb-*` DaemonSets removed; hostPorts 80/443 freed on all nodes.
@@ -636,26 +574,21 @@ Expected: 5 `svclb-*` DaemonSets, 15 pods (3 of them `Pending`), and the 5 Metal
 
 Expected: `OK: snapshot set 'pre-servicelb' created`.
 
-- [ ] **Step 3: Create the k3s config file**
+- [ ] **Step 3: Verify the committed k3s config file**
 
-Create `k3s/config.yaml`:
+`k3s/config.yaml` was authored and committed in Phase A (`c69c00c`). **Do not
+rewrite it.** Confirm it is present and unmodified, then read it:
 
-```yaml
-# Declarative k3s server config. Survives reinstalls and upgrades, unlike editing
-# the systemd unit that the install script generates.
-#
-# servicelb (klipper) is disabled because MetalLB provides LoadBalancer IPs from
-# 192.168.20.0/24. Running both made klipper bind hostPorts on every node for
-# every LoadBalancer service; svclb-lb-unifi could never schedule because
-# svclb-traefik already held hostPort 80/443, and sat Pending for 650 days.
-disable:
-  - servicelb
-
-# The control-plane taint was previously applied by hand with kubectl and would
-# be lost on reinstall or re-registration. See the repo README.
-node-taint:
-  - "node-role.kubernetes.io/control-plane:NoExecute"
+```sh
+git status --porcelain -- k3s/config.yaml
+git log --oneline -1 -- k3s/config.yaml
+cat k3s/config.yaml
 ```
+
+Expected: no `git status` output, most recent commit `c69c00c`, and the file
+setting `disable: [servicelb]` and the `node-role.kubernetes.io/control-plane:NoExecute`
+node-taint. Step 4 echoes this same content back from the controller — know what
+it should look like before you compare.
 
 - [ ] **Step 4: Install it on the controller and restart k3s**
 
@@ -714,104 +647,37 @@ kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-
 
 Expected: `0` (was 5 — 3 `KubePodNotReady` + 2 `KubeDaemonSetRolloutStuck`).
 
-- [ ] **Step 8: Write `k3s/README.md`**
+- [ ] **Step 8: Verify the committed `k3s/README.md`**
 
-```markdown
-# k3s configuration
-
-Single server (`k3s-controller`) with the default **SQLite** datastore — there is
-no etcd, so there is no `etcd-snapshot` tooling. Backups come from Proxmox VM
-snapshots; see `../proxmox/README.md`.
-
-Agents join using `K3S_URL`/`K3S_TOKEN` in
-`/etc/systemd/system/k3s-agent.service.env`, but the installer never reads that
-file — it picks server vs agent from the environment and rewrites the env file
-from scratch. Both variables must therefore be supplied explicitly on every agent
-upgrade; see [Upgrading](#upgrading).
-
-## config.yaml
-
-`config.yaml` belongs at `/etc/rancher/k3s/config.yaml` on the **controller**.
-It is declarative and survives reinstalls, unlike the `ExecStart` line the
-install script bakes into the systemd unit.
-
-Run from the repo root on your workstation — the controller needs no checkout:
+`k3s/README.md` was authored in Phase A across `c69c00c`, `57cd3ca`, `146fd27`
+and `2c2fbcc` (the last two fix real traps: agents need `K3S_URL`/`K3S_TOKEN` on
+every install, and the config install must carry the sudo password and the file
+down one stdin stream). **Do not rewrite it.** Confirm it is present and
+unmodified:
 
 ```sh
-read -rs SUDO_PASSWORD          # keeps it off the command line and out of history
-
-printf '%s\n' "$SUDO_PASSWORD" | \
-  ssh grant@k3s-controller 'sudo -S -p "" mkdir -p /etc/rancher/k3s'
-
-{ printf '%s\n' "$SUDO_PASSWORD"; cat k3s/config.yaml; } | \
-  ssh grant@k3s-controller 'sudo -S -p "" tee /etc/rancher/k3s/config.yaml >/dev/null'
-
-# ~30-60s API outage
-printf '%s\n' "$SUDO_PASSWORD" | \
-  ssh grant@k3s-controller 'sudo -S -p "" systemctl restart k3s'
+git status --porcelain -- k3s/README.md
+git log --oneline -1 -- k3s/README.md
+grep -n "^## " k3s/README.md
 ```
 
-`sudo` prompts for a password on these nodes, and one stdin stream carries both
-it and the file: `sudo -S` reads the password from stdin and consumes exactly
-the first line, so everything after that line is what `tee` writes. `-p ""`
-suppresses the prompt string so it does not end up in the output.
+Expected: no `git status` output, most recent commit `2c2fbcc`, and at least the
+`## config.yaml` and `## Upgrading` sections.
 
-The `{ ...; } |` grouping is not stylistic. Piping *and* redirecting into the
-same `ssh` — `printf ... | ssh ... 'sudo -S ... tee ...' < k3s/config.yaml` —
-only feeds both under zsh's MULTIOS; in `bash` and `sh` the redirect silently
-wins, the password is discarded, and the config file is offered as the password.
-Concatenating into a single stream is POSIX-portable.
+Read `## Upgrading` now — Task 12 executes exactly that procedure, and the
+`K3S_URL`/`K3S_TOKEN` warning there is the one that matters most.
 
-Authenticating sudo interactively beforehand does **not** work instead. sudo
-caches credentials with `timestamp_type=tty` by default (the option formerly
-called `tty_tickets`), so an interactive session's ticket is bound to that tty
-and a later `ssh host 'sudo …'` does not match it. With no terminal at all sudo
-falls back to per-parent-process scoping, so each `ssh` gets its own record. It
-prompts again either way. `scp` to a temp path then `sudo install` hits the same
-wall.
+- [ ] **Step 9: Delete the gate snapshot**
 
-## Upgrading
-
-One minor version at a time — the control plane does not support skipping minors.
-Controller first, then agents.
+`k3s/config.yaml` and `k3s/README.md` are already committed, so there is nothing
+to stage. Confirm the tree is clean rather than attempting a commit:
 
 ```sh
-# controller
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=vX.Y.Z+k3sN sh -
-# agents -- K3S_URL and K3S_TOKEN are REQUIRED. The installer picks server vs
-# agent from the environment, not from what is already installed, and rewrites
-# k3s-agent.service.env from scratch. Omitting them installs a SERVER here.
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=vX.Y.Z+k3sN \
-  K3S_URL=https://k3s-controller:6443 K3S_TOKEN=<token> sh -
-```
-
-`<token>` lives on the controller at `/var/lib/rancher/k3s/server/node-token`
-(`sudo cat` it). Omitting it on a worker does not fail loudly: the installer
-derives the unit name from the mode it picked, so it installs, enables and starts
-a second `k3s.service` in **server** mode alongside the untouched
-`k3s-agent.service` — which is never restarted, so the agent is not upgraded.
-
-Always snapshot first: `../proxmox/snapshot-cluster.sh create pre-k3s-vX-Y-Z`.
-```
-
-- [ ] **Step 9: Commit and delete the gate snapshot**
-
-```sh
-git add k3s/config.yaml k3s/README.md
-git commit -m "disable k3s servicelb in favour of metallb
-
-k3s server ran with no arguments, so klipper ServiceLB was enabled alongside
-MetalLB and created hostPort DaemonSets for all 5 LoadBalancer services.
-svclb-lb-unifi needs 6 hostPorts but svclb-traefik already held 80/443, so it
-sat Pending for 650 days and kept KubePodNotReady and KubeDaemonSetRolloutStuck
-firing. svclb-traefik itself had 92-104 restarts.
-
-Moves configuration to /etc/rancher/k3s/config.yaml so it survives reinstalls,
-and persists the control-plane NoExecute taint that was previously applied by
-hand and documented in the README as a known gap." -- k3s/config.yaml k3s/README.md
-
+git status --porcelain -- k3s/config.yaml k3s/README.md
 ./proxmox/snapshot-cluster.sh delete pre-servicelb
 ```
+
+Expected: no `git status` output, then `OK: snapshot set 'pre-servicelb' deleted`.
 
 **Rollback trigger:** any of the 5 LoadBalancer IPs missing or changed, traefik unreachable, or the API not ready within 200s. Recovery: `./proxmox/snapshot-cluster.sh rollback pre-servicelb`.
 
@@ -893,7 +759,8 @@ not misread as upgrade fallout." -- cert-manager/README.md
 
 26 releases. The operator manages ~25 annotation-driven egress proxies used for cross-cluster Prometheus scraping. **kubectl access does not depend on it** — that runs through the node's own `tailscaled`.
 
-**Files:** Create `tailscale/values.yml`, `tailscale/README.md`
+**Files:** none — `tailscale/values.yml` and `tailscale/README.md` were authored
+and committed in Phase A. This task verifies them, then applies the upgrade.
 
 **Interfaces:**
 - Consumes: verified rollback (Task 2).
@@ -909,11 +776,11 @@ kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-
   jq -r '[.data.activeTargets[]|select(.labels.cluster=="ovh" or .labels.cluster=="production")]|group_by(.health)|.[]|"\(.[0].health): \(length)"'
 ```
 
-Record the operator version, the pod count, and how many OVH/production targets are `up`. That target count is the acceptance criterion in Step 7.
+Record the operator version, the pod count, and how many OVH/production targets are `up`. That target count is the acceptance criterion in Step 8.
 
-- [ ] **Step 2: Move the OAuth secret out of Helm values**
+- [ ] **Step 2: Rotate the OAuth credential and move it out of Helm values**
 
-The current values hold `oauth.clientSecret` in plaintext, so they cannot be committed. The chart creates the `operator-oauth` Secret from those values; that Secret **already exists** (671d old), and the chart will adopt it rather than recreate it when the values are omitted.
+The current values hold `oauth.clientSecret` in plaintext, so they cannot be committed. The chart creates the `operator-oauth` Secret from those values, and that Secret **already exists** (671d old) — but it is owned by the Helm release, not adopted from outside it. Step 3 deals with the consequence; do not skip it.
 
 **Rotate the credential first** — it was exposed in a terminal session on 2026-09-13. Create a new OAuth client in the Tailscale admin console with the same scopes, then:
 
@@ -924,33 +791,51 @@ kubectl --context local-k3s create secret generic operator-oauth -n tailscale \
   --dry-run=client -o yaml | kubectl --context local-k3s apply -f -
 ```
 
-- [ ] **Step 3: Write secret-free values**
+- [ ] **Step 3: Protect the Secret from Helm's pruner**
 
-Create `tailscale/values.yml`:
+`operator-oauth` is owned by the Helm release (`app.kubernetes.io/managed-by: Helm`,
+`meta.helm.sh/release-name: tailscale-operator`), and the chart only renders it
+when `oauth.clientId` is set. Upgrading with `tailscale/values.yml`, which
+deliberately omits it, drops the Secret from the rendered manifest — and Helm
+deletes resources that are in the old manifest and absent from the new one. That
+would destroy the credential you just rotated in Step 2 and break every egress
+proxy carrying cross-cluster Prometheus scraping. Annotate it first:
 
-```yaml
-# Tailscale operator values.
-#
-# oauth.clientId / oauth.clientSecret are deliberately NOT set here. The chart
-# would render them into the operator-oauth Secret in plaintext, which cannot be
-# committed. That Secret is managed out-of-band instead:
-#
-#   kubectl create secret generic operator-oauth -n tailscale \
-#     --from-literal=client_id='...' --from-literal=client_secret='...'
-#
-# The operator reads the Secret directly, so omitting the values is safe as long
-# as the Secret exists before install or upgrade.
-operatorConfig:
-  logging: info
+```sh
+kubectl --context local-k3s annotate secret operator-oauth -n tailscale \
+  helm.sh/resource-policy=keep --overwrite
+kubectl --context local-k3s get secret operator-oauth -n tailscale \
+  -o jsonpath='{.metadata.annotations.helm\.sh/resource-policy}'; echo
 ```
 
-- [ ] **Step 4: Gate — snapshot**
+Expected: `keep`. **If this does not print `keep`, stop — do not run the upgrade.**
+
+This must happen after Step 2 (the Secret must exist to be annotated) and before
+the upgrade in Step 7. `tailscale/README.md` documents the same requirement under
+"Protect the Secret before upgrading".
+
+- [ ] **Step 4: Verify the committed secret-free values**
+
+`tailscale/values.yml` was authored and committed in Phase A (`5ca448b`). **Do
+not rewrite it.** Confirm it is present, unmodified, and free of credentials:
+
+```sh
+git status --porcelain -- tailscale/values.yml
+git log --oneline -1 -- tailscale/values.yml
+cat tailscale/values.yml
+grep -iE "client_secret|clientSecret|tskey-" tailscale/values.yml && echo "SECRET IN VALUES - STOP" || echo "no secret in values"
+```
+
+Expected: no `git status` output, most recent commit `5ca448b`, `no secret in
+values`, and the only setting being `operatorConfig.logging`.
+
+- [ ] **Step 5: Gate — snapshot**
 
 ```sh
 ./proxmox/snapshot-cluster.sh create pre-tailscale
 ```
 
-- [ ] **Step 5: Diff the rendered output before applying**
+- [ ] **Step 6: Diff the rendered output before applying**
 
 A 26-release jump can move the values schema, so inspect rather than assume.
 
@@ -965,7 +850,18 @@ grep -iE "client_secret|tskey-" /tmp/ts-new.yaml && echo "SECRET IN RENDER - STO
 
 Expected: a plausible set of kinds (Deployment, ServiceAccount, RBAC, CRDs) and `no secret in rendered output`. **If a secret appears, stop** — the chart is still templating it and Step 2 needs revisiting.
 
-- [ ] **Step 6: Upgrade**
+The absence of a `Secret` kind here is exactly why Step 3 is mandatory: the
+resource is gone from the new manifest but present in the old one, which is the
+condition Helm prunes on. Confirm Step 3 was done before continuing:
+
+```sh
+kubectl --context local-k3s get secret operator-oauth -n tailscale \
+  -o jsonpath='{.metadata.annotations.helm\.sh/resource-policy}'; echo
+```
+
+Expected: `keep`.
+
+- [ ] **Step 7: Upgrade**
 
 ```sh
 helm upgrade tailscale-operator tailscale/tailscale-operator --kube-context local-k3s \
@@ -975,7 +871,20 @@ kubectl --context local-k3s rollout status deploy/operator -n tailscale --timeou
 
 Expected: `STATUS: deployed`, `REVISION: 2`, rollout complete.
 
-- [ ] **Step 7: Verify the proxies came back — acceptance test**
+- [ ] **Step 8: Verify the Secret survived and the proxies came back — acceptance test**
+
+Check the Secret first. If it is gone, the proxies cannot recover no matter how
+long you wait, and the target counts below are meaningless.
+
+```sh
+kubectl --context local-k3s get secret operator-oauth -n tailscale \
+  -o jsonpath='{.metadata.name}' 2>/dev/null || echo "SECRET GONE - operator will fail"
+echo
+```
+
+Expected: `operator-oauth`. If it prints `SECRET GONE - operator will fail`,
+Helm pruned it — stop and recover the credential (re-create it from the Tailscale
+admin console as in Step 2, then re-apply Step 3) before judging anything else.
 
 The `ts-*` StatefulSets are recreated, so targets will flap briefly. Allow time before judging.
 
@@ -989,69 +898,38 @@ kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-
 
 Expected: every `tailscale` pod `Running`, and the `up` count matching Step 1. If lower after 5 minutes, check `kubectl logs -n tailscale deploy/operator`.
 
-- [ ] **Step 8: Write `tailscale/README.md`**
+- [ ] **Step 9: Verify the committed `tailscale/README.md`**
 
-```markdown
-# Tailscale operator
-
-Installed from the Tailscale Helm repo into the `tailscale` namespace.
+`tailscale/README.md` was authored and committed in Phase A (`b8141a3`). **Do not
+rewrite it.** Confirm it is present and unmodified:
 
 ```sh
-helm repo add tailscale https://pkgs.tailscale.com/helmcharts
-helm upgrade --install tailscale-operator tailscale/tailscale-operator \
-  -n tailscale --create-namespace --version 1.102.3 -f values.yml
+git status --porcelain -- tailscale/README.md
+git log --oneline -1 -- tailscale/README.md
+grep -n "^#\{2,3\} " tailscale/README.md
 ```
 
-## The OAuth credential is not in this repo
+Expected: no `git status` output, most recent commit `b8141a3`, and sections
+including "The OAuth credential is not in this repo", "Protect the Secret before
+upgrading", "What it does here" and "Upgrading".
 
-`values.yml` deliberately omits `oauth.clientId` / `oauth.clientSecret`. The
-chart would render them into the `operator-oauth` Secret in plaintext, which
-cannot be committed. That Secret is managed out-of-band and **must exist before
-install or upgrade**:
+The install snippet in that file uses a `<version>` placeholder on purpose — the
+repo's prose must never assert a live version, because it goes stale silently.
+Do not substitute `1.102.3` into it.
+
+- [ ] **Step 10: Delete the gate snapshot**
+
+`tailscale/values.yml` and `tailscale/README.md` are already committed, so there
+is nothing to stage. Confirm the tree is clean rather than attempting a commit:
 
 ```sh
-kubectl create secret generic operator-oauth -n tailscale \
-  --from-literal=client_id='...' --from-literal=client_secret='...'
-```
-
-## What it does here
-
-It manages roughly 25 annotation-driven **egress** proxies (`ts-*` StatefulSets)
-so this cluster can scrape Prometheus metrics from the OVH and production
-clusters. See the `ovh-*` and `production-*` jobs in
-`../prometheus/additional-scrape-configs.yml`.
-
-It does **not** serve LAN traffic — that is MetalLB's job, and the two are not
-interchangeable.
-
-`kubectl` access to this cluster does **not** depend on the operator; it goes
-through the node's own `tailscaled` (`k3s-controller` → 100.90.254.5). Upgrading
-the operator cannot lock you out.
-
-## Upgrading
-
-The `ts-*` StatefulSets are recreated, so cross-cluster Prometheus targets flap
-for a minute or two. Compare the `up` count for `cluster="ovh"` and
-`cluster="production"` before and after rather than judging immediately.
-```
-
-- [ ] **Step 9: Commit and delete the gate snapshot**
-
-```sh
-git add tailscale/values.yml tailscale/README.md
-git commit -m "upgrade tailscale operator to 1.102.3 and keep oauth out of git
-
-The operator was 26 releases behind. Its Helm values held the OAuth
-clientSecret in plaintext, so they could not be committed; the operator-oauth
-Secret is now managed out-of-band and the values omit the credential.
-
-The credential was exposed in a terminal session on 2026-09-13 and must be
-rotated as part of this change." -- tailscale/values.yml tailscale/README.md
-
+git status --porcelain -- tailscale/values.yml tailscale/README.md
 ./proxmox/snapshot-cluster.sh delete pre-tailscale
 ```
 
-**Rollback trigger:** OVH/production `up` target count does not return to the Step 1 value within 5 minutes, or the operator pod crash-loops. Recovery: `helm rollback tailscale-operator 1 -n tailscale`; if that fails, `./proxmox/snapshot-cluster.sh rollback pre-tailscale`.
+Expected: no `git status` output, then `OK: snapshot set 'pre-tailscale' deleted`.
+
+**Rollback trigger:** the `operator-oauth` Secret is missing after the upgrade, OVH/production `up` target count does not return to the Step 1 value within 5 minutes, or the operator pod crash-loops. Recovery: `helm rollback tailscale-operator 1 -n tailscale`; if that fails, `./proxmox/snapshot-cluster.sh rollback pre-tailscale`. Note that `helm rollback` will **not** bring back a pruned Secret with a new credential in it — that has to be re-created from the Tailscale admin console.
 
 ---
 
@@ -1059,7 +937,8 @@ rotated as part of this change." -- tailscale/values.yml tailscale/README.md
 
 Installed from raw manifests, not Helm. Config is minimal: one `IPAddressPool` (`192.168.20.1-255`) and one `L2Advertisement`, no BGP. **This is load-bearing** — it provides the IP for Traefik, which fronts all 6 Ingresses, plus UniFi and the registry.
 
-**Files:** Modify `metallb/README.md`
+**Files:** none — `metallb/README.md` was updated and committed in Phase A. This
+task verifies it.
 
 - [ ] **Step 1: Record the pre-change state**
 
@@ -1129,20 +1008,23 @@ kubectl --context local-k3s get ingress -A
 
 Expected: `ALL 5 LB IPs UNCHANGED`, each IP answering (any HTTP status proves L2 works), and all 6 Ingresses still showing `192.168.20.1`.
 
-- [ ] **Step 8: Update the README and commit**
+- [ ] **Step 8: Verify the committed README and delete the gate snapshot**
 
-In `metallb/README.md`, change the manifest URL from `v0.14.5` to `v0.16.1` and fix the stale reference to `metallb-config.yaml` (the file is `metallb-config.yml`).
+`metallb/README.md` was already updated in Phase A (`cd193d1`): the manifest URL
+was bumped `v0.14.5` → `v0.16.1` and the stale `metallb-config.yaml` reference
+corrected to `metallb-config.yml`. **Nothing to edit and nothing to commit.**
 
 ```sh
-git add metallb/README.md
-git commit -m "upgrade metallb to v0.16.1
+git status --porcelain -- metallb/README.md
+git log --oneline -1 -- metallb/README.md
+grep -n "v0\.1[46]\.\|metallb-config" metallb/README.md
+```
 
-Installed from upstream manifests rather than Helm. Config is unchanged: one
-L2 IPAddressPool (192.168.20.1-255) and one L2Advertisement, no BGP.
+Expected: no `git status` output, most recent commit `cd193d1`, the manifest URL
+at `v0.16.1` with no `v0.14.5` remaining, and `metallb-config.yml`. The URL must
+match the one you applied in Step 4.
 
-MetalLB is load-bearing -- it provides the IP for traefik, which fronts all 6
-ingresses, plus unifi and the registry." -- metallb/README.md
-
+```sh
 ./proxmox/snapshot-cluster.sh delete pre-metallb
 ```
 
@@ -1154,7 +1036,11 @@ ingresses, plus unifi and the registry." -- metallb/README.md
 
 A 7-minor jump in one step gives a large surface to bisect. Stopping at 1.17 first halves it. cert-manager's webhook is cluster-wide — if it breaks, **all** Certificate/Issuer admission fails.
 
-**Files:** Modify `cert-manager/install-crd.sh`
+**Files:** none. `cert-manager/install-crd.sh` already targets the **final**
+version (`v1.21.2`, committed in Phase A as `3f1ae20`) and is deliberately not
+stepped down to the intermediate. **Do not run `install-crd.sh` in this task** —
+it would jump straight to v1.21.2 and skip the intermediate stop this task exists
+to provide. Use the explicit commands in Steps 3 and 4.
 
 - [ ] **Step 1: Record the pre-change state**
 
@@ -1237,7 +1123,11 @@ Expected: the same 4 `True` certificates as Step 1, `letsencrypt-prod` still `Tr
 
 ## Task 11: Upgrade cert-manager v1.17.2 → v1.21.2
 
-**Files:** Modify `cert-manager/install-crd.sh`, `cert-manager/README.md`
+**Files:** none — `cert-manager/install-crd.sh` and `cert-manager/README.md` were
+updated and committed in Phase A. This task verifies them, then applies the
+upgrade. (Task 7 Step 4 does append a "Known issues" section to
+`cert-manager/README.md`; that is the one cert-manager file change Phase B
+still makes, and Task 7 commits it.)
 
 - [ ] **Step 1: Confirm Task 10 landed cleanly**
 
@@ -1283,7 +1173,7 @@ kubectl --context local-k3s delete issuer webhook-probe -n default
 
 Expected: created then deleted.
 
-- [ ] **Step 5: Verify certificates and update the install script**
+- [ ] **Step 5: Verify certificates, then verify the committed cert-manager files**
 
 ```sh
 sleep 60
@@ -1292,68 +1182,40 @@ kubectl --context local-k3s get certificates -A
 
 Expected: same 4 `True`.
 
-Update `cert-manager/install-crd.sh` to:
+`cert-manager/install-crd.sh` and `cert-manager/README.md` were both updated and
+committed in Phase A (`3f1ae20`). **Do not rewrite either.** Confirm they are
+present, unmodified, and consistent with what Step 3 just applied:
 
 ```sh
-# CRDs must be applied before the chart.
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.2/cert-manager.crds.yaml
-
-helm upgrade --install \
-  cert-manager jetstack/cert-manager \
-  --namespace cert-manager \
-  --create-namespace \
-  --version v1.21.2 \
-  --set crds.enabled=false \
-  --set crds.keep=true
+git status --porcelain -- cert-manager/install-crd.sh cert-manager/README.md
+git log --oneline -1 -- cert-manager/install-crd.sh cert-manager/README.md
+grep -n "v1\.21\.2\|crds\.enabled\|crds\.keep" cert-manager/install-crd.sh
+grep -n "v1\.21\.2\|install-crd.sh" cert-manager/README.md
 ```
 
-And prepend this to `cert-manager/README.md`:
-
-```markdown
-# cert-manager
-
-Currently **v1.21.2**. Install/upgrade with `install-crd.sh`.
-
-CRDs are applied from the GitHub release manifest **before** the chart, and the
-chart is told not to manage them (`crds.enabled=false`, `crds.keep=true`) so a
-`helm uninstall` cannot destroy live Certificates. The `installCRDs` flag used
-by older versions of this repo was renamed `crds.enabled` in cert-manager 1.15.
-
-Upgraded 2026-09-13 from v1.14.5 via v1.17.2. Stepping through an intermediate
-release keeps the bisect surface small; 1.14 → 1.21 is seven minors.
-
-**The webhook is cluster-wide.** If it is unhealthy, every Certificate and
-Issuer admission fails, not just cert-manager's own. After any upgrade, prove
-admission works rather than assuming:
+Expected: no `git status` output, most recent commit `3f1ae20`, the script
+pinning `v1.21.2` with `crds.enabled=false` and `crds.keep=true`, and the README
+attributing that version to `install-crd.sh` rather than asserting what is live
+in the cluster. That distinction is deliberate — prose that claims a running
+version goes stale silently. If you want the cluster's actual version, read it:
 
 ```sh
-kubectl apply -f - <<'EOF'
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata: {name: webhook-probe, namespace: default}
-spec: {selfSigned: {}}
-EOF
-kubectl delete issuer webhook-probe -n default
-```
+kubectl --context local-k3s get deploy cert-manager -n cert-manager \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
 ```
 
-- [ ] **Step 6: Commit and delete both gate snapshots**
+- [ ] **Step 6: Delete both gate snapshots**
+
+Nothing to stage — both files are already committed. Confirm the tree is clean
+rather than attempting a commit:
 
 ```sh
-git add cert-manager/install-crd.sh cert-manager/README.md
-git commit -m "upgrade cert-manager to v1.21.2
-
-Stepped via v1.17.2 rather than jumping 7 minors at once, so a failure has a
-smaller surface to bisect. cert-manager 1.14 only supports kubernetes up to
-1.29, so this unblocks the kubernetes minor upgrades.
-
-CRDs are applied from the release manifest before the chart and kept on
-uninstall; installCRDs was renamed crds.enabled in 1.15." \
-  -- cert-manager/install-crd.sh cert-manager/README.md
-
+git status --porcelain -- cert-manager/install-crd.sh cert-manager/README.md
 ./proxmox/snapshot-cluster.sh delete pre-certmanager-117
 ./proxmox/snapshot-cluster.sh delete pre-certmanager-121
 ```
+
+Expected: no `git status` output, then both snapshot sets deleted.
 
 **Rollback trigger:** same as Task 10. Recovery: `helm rollback cert-manager <prev-rev> -n cert-manager`, else snapshot rollback.
 
@@ -1363,7 +1225,11 @@ uninstall; installCRDs was renamed crds.enabled in 1.15." \
 
 No API changes within a patch release, so this validates the upgrade *mechanism* — binary swap, systemd restart, drain/uncordon order — at minimal risk before any minor hop.
 
-**Files:** Modify `k3s/README.md`
+**Files:** none. No step in this task edits a repo file. `k3s/README.md` already
+documents this procedure and was finalised in Phase A (`2c2fbcc`) — this task
+*executes* what it describes; it does not change it. The version numbers here are
+plan-local, and the README deliberately uses `vX.Y.Z+k3sN` placeholders rather
+than asserting what is running.
 
 - [ ] **Step 1: Record the pre-change state**
 
@@ -1459,24 +1325,30 @@ kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-
 
 Expected: `bulk-pool => 0` and `main-pool => 0`.
 
-- [ ] **Step 8: Commit and delete the gate snapshot**
+- [ ] **Step 8: Confirm the tree is clean and delete the gate snapshot**
+
+This task changed no repo files, so there is nothing to commit. Attempting one
+would stage nothing and `git commit` would exit non-zero, failing the task at its
+last step. Verify instead:
 
 ```sh
-git add k3s/README.md
-git commit -m "upgrade k3s to v1.29.15+k3s1
+git status --porcelain -- k3s/
+```
 
-Patch-level only, so no API changes. Validates the upgrade mechanism -- binary
-swap via the install script, systemd restart, and drain/uncordon ordering --
-before attempting any minor version hop.
+Expected: no output. If `k3s/README.md` *is* dirty, something edited it during
+the upgrade — review the diff and decide deliberately, rather than committing it
+as part of this task.
 
-Agents must have K3S_URL and K3S_TOKEN re-supplied on every install. The script
-picks server vs agent from the environment and rewrites k3s-agent.service.env
-from scratch rather than reading it, so running it bare on a worker would install
-a second k3s in server mode and leave the agent unrestarted." \
-  -- k3s/README.md
+Then release the gate:
 
+```sh
 ./proxmox/snapshot-cluster.sh delete pre-k3s-1-29-15
 ```
+
+Expected: `OK: snapshot set 'pre-k3s-1-29-15' deleted`.
+
+Record the outcome in the plan ledger (check off this task's boxes) — that is the
+completion record for Task 12, not a commit.
 
 **Rollback trigger:** any node fails to reach `v1.29.15+k3s1` and `Ready` within 3 minutes of uncordon; any LB IP changes; traefik unreachable; any previously-`True` certificate goes `False`. Recovery: `./proxmox/snapshot-cluster.sh rollback pre-k3s-1-29-15` — downgrading k3s in place is not supported, so the snapshot is the only route back.
 
