@@ -15,6 +15,7 @@ It is declarative and survives reinstalls, unlike the `ExecStart` line the
 install script bakes into the systemd unit.
 
 ```sh
+sudo mkdir -p /etc/rancher/k3s
 sudo tee /etc/rancher/k3s/config.yaml < config.yaml
 sudo systemctl restart k3s     # ~30-60s API outage
 ```
