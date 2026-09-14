@@ -2032,19 +2032,27 @@ about after a pool ran degraded for weeks.
 
 - [ ] **Step 9: Verify the committed README and delete the gate snapshot**
 
-`metallb/README.md` was already updated in Phase A (`cd193d1`): the manifest URL
-was bumped `v0.14.5` → `v0.16.1` and the stale `metallb-config.yaml` reference
-corrected to `metallb-config.yml`. **Nothing to edit and nothing to commit.**
+`metallb/README.md` was updated in Phase A (`cd193d1`: manifest URL bumped
+`v0.14.5` → `v0.16.1`, stale `metallb-config.yaml` reference corrected to
+`metallb-config.yml`) and again when the metrics regression in Step 8 was
+documented. **Nothing to edit and nothing to commit.**
 
 ```sh
 git status --porcelain -- metallb/README.md
 git log --oneline -1 -- metallb/README.md
-grep -n "v0\.1[46]\.\|metallb-config" metallb/README.md
+grep -n "kubectl apply -f https" metallb/README.md
+grep -n "metallb-config" metallb/README.md
+grep -n "9120\|7472" metallb/README.md
 ```
 
-Expected: no `git status` output, most recent commit `cd193d1`, the manifest URL
-at `v0.16.1` with no `v0.14.5` remaining, and `metallb-config.yml`. The URL must
-match the one you applied in Step 4.
+Expected: no `git status` output; the `kubectl apply` URL at **`v0.16.1`**,
+matching the one you applied in Step 4; `metallb-config.yml`; and the metrics
+table mentioning both `7472` and `9120`.
+
+**Do not grep for "no `v0.14.5` anywhere in the file"** — an earlier revision of
+this step did, and it is now wrong: the metrics section contains a before/after
+table that names `v0.14.5` deliberately. What matters is the version in the
+`kubectl apply` command, which is why that is grepped specifically.
 
 ```sh
 ./proxmox/snapshot-cluster.sh delete pre-metallb

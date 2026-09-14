@@ -477,6 +477,18 @@ Verify after: all 5 VIPs still assigned, Traefik still reachable on 192.168.20.1
 Note: benign-but-noisy `"Failed to retrieve lbIPs family","reason":"nolbIPsIPFamily"`
 errors in the 0.14.x controller log should disappear.
 
+**Watch for a silent monitoring regression.** v0.16.0 replaced kube-rbac-proxy with
+native TLS: the metrics port moves **7472 → 9120** and becomes **HTTPS with a
+self-signed certificate** (*"The old HTTP endpoints are no longer available"*).
+v0.16.1 fixed the resulting scrape failures **in the Helm chart only**, and this
+cluster installs from `metallb-native.yaml`, which ships no ServiceMonitor, no
+PodMonitor and no `prometheus.io/scheme` annotation. Nothing user-visible breaks —
+LB IPs, L2 announcement and Ingresses are unaffected — so this lands as monitoring
+that quietly stops reporting, with no alert, on a cluster running
+kube-prometheus-stack. Plan Task 9 Step 1 records the "before" and Step 8 checks the
+"after"; `metallb/README.md` has the fix. It is deliberately **not** a rollback
+trigger — fix it forward.
+
 ### Phase 3 — cert-manager: REMOVED FROM SCOPE
 
 **This phase has no work in it.** cert-manager stays on v1.14.5. The phase number is
