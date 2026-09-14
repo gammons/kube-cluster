@@ -2,9 +2,9 @@
 
 **Date:** 2026-09-12, revised 2026-09-13 after Phase A
 **Cluster:** `local-k3s` (kubectl context), 4 VMs on Proxmox host `pve` (192.168.5.1)
-**Scope approved:** Phases 0-4. Phase 5+ (Kubernetes minor hops, plus the
-cert-manager 1.17 → 1.21 move that only becomes possible at Kubernetes 1.33)
-deferred pending reassessment.
+**Scope approved:** Phases 0-4, **minus cert-manager**, which was removed from
+scope entirely on 2026-09-13 — see "cert-manager: removed from scope". Phase 5+
+(Kubernetes minor hops) deferred pending reassessment.
 
 > **Always pass `--context local-k3s` explicitly.** The kubeconfig contains 8 contexts
 > including `aws-truelist-prod` and `production`, and `current-context` has previously
@@ -48,14 +48,14 @@ assumed.
 | k3s / Kubernetes | **v1.29.4+k3s1** | v1.36.4+k3s1 | **7 minors** | install script, systemd |
 | Tailscale operator | **1.76.6** (2024-11-10) | **1.102.3** | **26 releases** | Helm (`tailscale/tailscale-operator`) |
 | MetalLB | **v0.14.5** | **v0.16.1** | 2 minors | **raw `kubectl apply`** (not Helm) |
-| cert-manager | **v1.14.5** (2024-05) | **v1.21.2** † | **7 minors** | Helm (`jetstack/cert-manager`) |
+| cert-manager | **v1.14.5** (2024-05) | v1.21.2 † | 7 minors | Helm (`jetstack/cert-manager`) |
 | Traefik | v2.10.5 (chart 25.0.3) | v3.x | 1 major | k3s packaged component |
 | Velero | 1.18.1 | — | — | Helm |
 
-† **"Latest" is not the target.** cert-manager 1.21 requires Kubernetes ≥1.33 and
-cannot run on this cluster at all. The reachable target is **v1.17.4** — see
-"cert-manager is EOL, not a gate" below. Closing the remaining 4 minors is Phase 5+
-work, gated on the cluster reaching 1.33.
+† **There is no cert-manager target. It was removed from scope** on 2026-09-13 and
+stays on v1.14.5 — see "cert-manager: removed from scope" below. The gap is real
+(1.14 has been EOL since Oct 2024) but it blocks nothing: 1.14 supports Kubernetes
+**1.24 → 1.31**.
 
 **Nodes:** 4 × Ubuntu 24.04, kernel 6.8.0-139, all `v1.29.4+k3s1`, age 2y122d.
 `k3s-controller` (192.168.10.1) is `Ready,SchedulingDisabled`; workers `k3s-node-1/2/3`
@@ -205,46 +205,140 @@ across the v2→v3 boundary. CRDs for both `traefik.containo.us` (removed in v3)
 This matters because k3s reapplies its packaged Traefik chart on restart; a k3s
 upgrade will bump Traefik whether or not we ask it to.
 
-### cert-manager is EOL, not a gate — and it must not get ahead of the cluster
+### cert-manager: removed from scope
 
-An earlier revision of this spec claimed v1.14.5 "supports Kubernetes ≤1.29" and
-that its webhooks "will fail against a 1.30+ API server", making cert-manager a hard
-gate that the whole phase ordering hung off. **That was wrong**, and it was wrong in
-the direction that produced an unexecutable plan. Checked against
-cert-manager.io/docs/releases on 2026-09-13:
+**cert-manager is not upgraded by any current plan. It stays on v1.14.5.**
 
-| cert-manager | Supported Kubernetes | Upstream EOL |
-|---|---|---|
-| 1.21 | **1.33 → 1.36** | current |
-| 1.17 | **1.29 → 1.33** | Oct 2025 (commercial LTS from Palo Alto Networks to Feb 2027) |
-| 1.14 | **1.24 → 1.31** | Oct 2024 |
+This section is the *record*, not a deferred design. It exists because the
+expensive part of this work was establishing which previous claims were false,
+and that must not have to be re-derived.
 
-The installed 1.14.5 supports Kubernetes up to **1.31**, so it gates nothing in
-Phases 0-4 and would survive the first two minor hops unaided.
+#### Why it was removed rather than corrected
 
-The honest reasons to upgrade it are different, and both still hold:
+The cert-manager reasoning in this project was **confidently wrong three separate
+times**, and on each occasion the wrong version was written down as settled — twice
+in the reassuring direction, which is the worse one. Three wrong answers recorded as
+final is evidence about the process, not about the last answer. Rather than attempt
+a fourth correction inside a plan that executes irreversible operations against a
+live production cluster, the owner removed the work from scope.
 
-- **1.14 has been EOL since Oct 2024** — no security or bug fixes.
-- **cert-manager must never get *ahead* of the cluster's Kubernetes version.**
-  This is the constraint that actually bites, and it bit in the opposite
-  direction from the one assumed: the target that was picked, 1.21, requires
-  Kubernetes ≥1.33, four minors above this cluster. It cannot be installed here
-  at all. The reachable target is **v1.17.4** (newest 1.17 patch, verified
-  available), which supports 1.29 and every hop through 1.33.
+**The next attempt must be derived from the chart source, not from release notes
+and not by inference.** Every one of the three errors below came from reading a
+summary and reasoning forward from it.
 
-Because 1.17 tops out at exactly the release 1.21 starts at, **1.33 is the only
-Kubernetes version at which the 1.17 → 1.21 move is possible.** That makes
-cert-manager a genuine gate — but for the 1.33 → 1.34 hop in Phase 5+, not for
-anything in Phases 0-4.
+#### Verified facts
 
-The consequence for the plan is that its cert-manager work splits: Task 10
-(→ v1.17.4) is executable now; Task 11 (→ v1.21.2) is not sequenceable until the
-Kubernetes hops reach 1.33 and is deferred to Phase 5+.
+All verified 2026-09-13 against primary sources: cert-manager.io/docs/releases,
+`helm pull jetstack/cert-manager --version v1.14.5 --untar`, and the v1.17.4
+release manifest.
 
-Existing issue: `truelist-staging/truelist-stag-io-cert` has been `READY=False` for
-**171 days**, with a `cm-acme-http-solver-sqcfr` pod and orphan solver Ingress still
-present. Diagnose before upgrading cert-manager so a pre-existing failure isn't
-mistaken for upgrade fallout.
+**1. cert-manager 1.14 supports Kubernetes 1.24 → 1.31. It is not a gate.**
+The original claim that v1.14.5 "supports Kubernetes ≤1.29" and that its webhooks
+"will fail against a 1.30+ API server" was **false**. The installed version would
+survive the deferred k8s hops from 1.29 through 1.31 unaided. Nothing in Phases 0-4
+depends on moving it.
+
+**2. 1.17 and 1.18 both support Kubernetes 1.29 → 1.33.** The claim that "1.17 is
+the newest release supporting 1.29" was **false** — 1.18 covers the identical range.
+(1.19 starts at 1.31, so 1.18 is in fact the newest that reaches down to 1.29.)
+
+| cert-manager | Supported Kubernetes | Upstream EOL | LTS |
+|---|---|---|---|
+| 1.21 | 1.33 → 1.36 | current | — |
+| 1.19 | 1.31 → 1.35 | Jul 2026 | — |
+| 1.18 | **1.29 → 1.33** | **Mar 2026 — already passed** | none |
+| 1.17 | **1.29 → 1.33** | Oct 2025 | commercial (Palo Alto Networks), **Feb 2027** |
+| 1.14 | **1.24 → 1.31** | Oct 2024 | — |
+
+1.17's *only* advantage over 1.18 is the commercial LTS to Feb 2027. 1.18 reached
+EOL in Mar 2026 with no LTS at all. Both are already past upstream EOL as of the
+date of this revision. Choose between them on support lifetime, not on a Kubernetes
+range that is identical.
+
+**3. 1.21 supports Kubernetes 1.33 → 1.36** — four minors above this cluster's 1.29,
+so it is unusable until after the deferred k8s hops. This part of the earlier
+analysis was correct.
+
+**4. The live CRDs are Helm-owned and unprotected.** This is the finding that makes
+a careless upgrade destructive, and it is the one that was stated backwards.
+
+Verified from the chart source for **v1.14.5**, the version actually installed:
+
+- The chart has **no `crds/` directory**. (Helm treats `crds/` as unmanaged — never
+  templated, never upgraded, never pruned. Its absence is the whole point.)
+- The six CRDs are in **`templates/crds.yaml`**, gated on
+  `{{- if .Values.installCRDs }}`. They are therefore **ordinary templated
+  resources**, part of the release manifest and subject to Helm's pruner.
+- There are **zero** occurrences of `resource-policy` anywhere in the 1.14.5 chart
+  (`grep -rn resource-policy` over the unpacked chart returns nothing). The chart
+  cannot have applied a `keep` annotation, so the six live CRDs carry **no `keep`
+  annotation from this source**.
+
+**Consequence:** any upgrade that renders zero CRDs — which is exactly what
+`--set crds.enabled=false` does — presents Helm with six resources that were in the
+old manifest and are absent from the new one. Helm prunes all six. CRD deletion
+cascades to **every Certificate, CertificateRequest, Issuer, ClusterIssuer, Order
+and Challenge in the cluster.**
+
+> **One caveat, stated deliberately rather than inferred.** The chart evidence proves
+> the *chart* supplies no `keep` annotation and that its CRDs are templated. Whether
+> the six live CRDs carry a `keep` annotation from some other source, and whether
+> they are in the current release manifest at all, depends on how this cluster was
+> actually installed — and that cannot be read from this repo. It must be checked
+> against the live cluster before any upgrade:
+>
+> ```sh
+> kubectl --context local-k3s get crd \
+>   certificates.cert-manager.io certificaterequests.cert-manager.io \
+>   issuers.cert-manager.io clusterissuers.cert-manager.io \
+>   orders.acme.cert-manager.io challenges.acme.cert-manager.io \
+>   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.helm\.sh/resource-policy}{"\n"}{end}'
+> helm --kube-context local-k3s get manifest cert-manager -n cert-manager \
+>   | grep -c CustomResourceDefinition
+> ```
+>
+> Assuming the answer is exactly the failure mode this whole section exists to
+> prevent. The chart facts are settled; the live state is not, and no amount of
+> reading the repo will settle it.
+
+**5. The v1.17.4 release manifest carries `helm.sh/resource-policy: keep` on all 6
+CRDs.** Verified by fetching `cert-manager.crds.yaml` for v1.17.4: 6
+`CustomResourceDefinition` documents, 6 `helm.sh/resource-policy: keep` annotations.
+**Applying that file *before* the chart upgrade is what would protect the CRDs.**
+That ordering is load-bearing, not bookkeeping. `--set crds.keep=true` is **not**
+the protection and cannot be: it only annotates CRDs the chart itself renders, and
+with `crds.enabled=false` it renders none, so it is inert.
+
+**6. "The chart never manages them" was false for this release.** That sentence
+appeared **twice** in earlier revisions of this spec and plan, both times as the
+reassuring version, and both times as the stated reason the CRDs were safe across a
+Helm rollback. For chart v1.14.5 the chart *does* template them. Treat any future
+statement of that shape as unverified until `ls crds/` and
+`grep -rn resource-policy` have been run against the specific chart version in
+question.
+
+#### If cert-manager is ever put back in scope
+
+Preconditions, in order:
+
+1. Run the two live-cluster commands in the caveat box above and record the output.
+2. `helm pull` both the installed and target chart versions and check `crds/`,
+   `templates/crds.yaml` gating, and `resource-policy` in each.
+3. Apply the target's `cert-manager.crds.yaml` release manifest **before** the chart
+   upgrade, and verify all 6 CRDs carry `keep` **between** the two steps.
+4. Only then upgrade the chart.
+
+The cluster must also still be within the target's supported Kubernetes range —
+1.21 requires ≥1.33, so it remains unusable until the deferred hops land.
+
+#### Unrelated, and still true
+
+`truelist-staging/truelist-stag-io-cert` has been `READY=False` for **171 days**,
+with a `cm-acme-http-solver-sqcfr` pod and orphan solver Ingress still present. This
+is a pre-existing failure with nothing to do with any upgrade. Plan Task 7 diagnoses
+and records it — worth doing because Task 12 restarts the API server and every node,
+and its acceptance test reads `get certificates -A`, where an undocumented long-dead
+certificate is indistinguishable from k3s-upgrade fallout.
 
 ### Deprecated API usage: inconclusive, needs re-check
 
@@ -285,12 +379,19 @@ deliberately omits the credential, so **the Secret must be annotated
 `helm.sh/resource-policy=keep` before the first upgrade with those values** or the
 credential is destroyed — including a freshly rotated one.
 
-**3. cert-manager's CRD protection is not what it looks like.** With
+**3. cert-manager's CRD protection is not what it looks like — and the first two
+attempts to say what it *is* were both wrong.** The one correct half: with
 `crds.enabled=false` the chart renders no CRDs, so `crds.keep=true` has nothing to
-annotate — **it is inert.** What actually protects them is that the chart never manages
-them, plus the released `cert-manager.crds.yaml` carrying `helm.sh/resource-policy: keep`
-on all 6 CRDs. Verify the annotation is present before upgrading; CRD deletion cascades
-to every Certificate, Issuer, Order and Challenge in the cluster.
+annotate and **is inert**. The wrong half, which this entry previously asserted:
+that the CRDs are safe because "the chart never manages them". **That is false for
+chart v1.14.5** — it has no `crds/` directory and templates all six from
+`templates/crds.yaml` under `installCRDs`, making them prunable release members with
+no `keep` annotation from the chart. What would actually protect them is applying the
+target release's `cert-manager.crds.yaml` (which does carry
+`helm.sh/resource-policy: keep` on all 6) **before** the chart upgrade. CRD deletion
+cascades to every Certificate, CertificateRequest, Issuer, ClusterIssuer, Order and
+Challenge in the cluster. Full record, including what is verified versus what still
+needs the live cluster, in "cert-manager: removed from scope" above.
 
 **4. Piping *and* redirecting into the same `ssh` is zsh-only.** Under `bash`/`sh` the
 redirect wins and the piped sudo password is silently discarded. Combined with a
@@ -328,8 +429,16 @@ before the cluster is bet on it.
 1. Confirm `sudo` works on all 4 nodes via the documented password.
 2. Install `qemu-guest-agent` in all 4 guests; `qm set <id> --agent 1`. Verify
    `qm agent <id> ping` responds. **Required for clean snapshots.**
-3. Establish the snapshot procedure **and test a real rollback** on the least critical
-   node before trusting it.
+3. Establish the snapshot procedure **and test a real rollback** before trusting it.
+   **The test is necessarily whole-cluster, not per-node.** An earlier revision said
+   to test "on the least critical node"; `snapshot-cluster.sh` has no such mode and
+   deliberately never will. A snapshot set is one label across **five** targets — VMs
+   100/101/102/103 and `main-pool/k3s-nfs` — and `rollback` stops all four VMs,
+   reverts all five, restarts them and restarts `nfs-server`. It is all-or-nothing by
+   design, because a partial set leaves the cluster split across two points in time,
+   which is worse than no set at all. Plan Task 2 is the real procedure: write a
+   canary to both storage layers, roll the whole set back, prove both canaries
+   vanish. Budget for the entire cluster being down for the duration.
 4. Widen the Velero schedule to all namespaces as a secondary safety net.
 5. Extend controller `/` (LVM has headroom inside the 65G zvol).
 6. Resolve the two failed Helm releases.
@@ -368,29 +477,19 @@ Verify after: all 5 VIPs still assigned, Traefik still reachable on 192.168.20.1
 Note: benign-but-noisy `"Failed to retrieve lbIPs family","reason":"nolbIPsIPFamily"`
 errors in the 0.14.x controller log should disappear.
 
-### Phase 3 — cert-manager v1.14.5 → v1.17.4
+### Phase 3 — cert-manager: REMOVED FROM SCOPE
 
-**Not** a gate for the Kubernetes hops in this scope — 1.14 supports Kubernetes up
-to 1.31 and would survive them. The reason to move is that 1.14 has been EOL since
-Oct 2024.
+**This phase has no work in it.** cert-manager stays on v1.14.5. The phase number is
+kept so the Phase 4 / Task 12 numbering and every cross-reference to it still
+resolve — the same reason the plan keeps a gap where Tasks 10 and 11 were.
 
-v1.17.4 is the **ceiling**, not a waypoint: 1.17 is the newest cert-manager that
-supports Kubernetes 1.29, and 1.21 requires ≥1.33. This is a 3-minor jump;
-cert-manager supports upgrading directly between 1.x releases but requires reading
-the intervening release notes, and CRDs must be applied **before** the chart.
+It costs nothing operationally: 1.14 supports Kubernetes **1.24 → 1.31**, so it gates
+neither Phase 4's patch bump inside 1.29 nor the first two hops of Phase 5+. It does
+leave a real gap — 1.14 has been EOL since Oct 2024 — which is accepted knowingly.
 
-**The trade being made, deliberately:** 1.17 reached upstream EOL in Oct 2025, so
-this lands on a release that gets no upstream fixes. Palo Alto Networks publish a
-commercial **1.17 LTS supported to Feb 2027**, which sets the horizon. Stopping here
-is a decision with a deadline attached, not an oversight: the cluster must reach
-Kubernetes 1.33 — and cert-manager 1.21 with it — before Feb 2027, or accept running
-unmaintained certificate infrastructure. That is the real schedule pressure behind
-Phase 5+, and it is a stronger argument for doing the hops than anything in the
-original "cert-manager is a hard gate" framing.
-
-Verify after: all 5 Certificates reconcile, `letsencrypt-prod` ClusterIssuer stays
-`Ready`, and the webhook is serving (a broken cert-manager webhook blocks all
-Certificate/Issuer admission cluster-wide).
+Rationale, the three prior errors, the verified version matrix, and the CRD-pruning
+hazard that makes a careless upgrade destructive: see "cert-manager: removed from
+scope" under Findings. **Read that before scheduling this work anywhere.**
 
 ### Phase 4 — k3s patch v1.29.4 → v1.29.15+k3s1
 
@@ -400,33 +499,33 @@ No API changes within a patch release, so this validates the upgrade *mechanism*
 Order: controller first, then workers one at a time, draining each. Expect workloads
 with `local-path` PVCs on the drained node to be unavailable until it returns.
 
-### Phase 5+ — Kubernetes minor hops, and the cert-manager 1.21 move (DEFERRED)
+### Phase 5+ — Kubernetes minor hops (DEFERRED)
 
 v1.30 → v1.31 → v1.32 → v1.33 → v1.34 → v1.35 → v1.36, one at a time, each with a
 snapshot gate and verification. Reassess after Phase 4.
 
 Before starting: re-sample `apiserver_requested_deprecated_apis` after ≥7 days uptime.
 
-**cert-manager 1.17 → 1.21 belongs in the middle of this phase, at exactly one
-point.** 1.17 supports Kubernetes up to 1.33; 1.21 requires ≥1.33. So:
+**cert-manager constrains this phase even though it is out of scope**, because the
+cluster cannot hop past a Kubernetes version the installed cert-manager does not
+support. The installed **1.14 supports 1.24 → 1.31**, so:
 
-| Cluster at | cert-manager must be |
+| Cluster at | Installed cert-manager 1.14 |
 |---|---|
-| 1.29 → 1.31 | 1.14 (supported) or 1.17 |
-| 1.32 → 1.33 | **1.17** (1.14 is out of range above 1.31) |
-| 1.34 → 1.36 | **1.21** (1.17 is out of range above 1.33) |
+| 1.30, 1.31 | **in range** — no action needed |
+| 1.32 and above | **out of range** — cert-manager must move first |
 
-Kubernetes **1.33 is the only version both support**, so the 1.17 → 1.21 upgrade
-must happen while the cluster is sitting on 1.33 — after that hop lands and before
-the 1.33 → 1.34 hop starts. Missing that window means going back down, not forward.
+So the first two hops can proceed with cert-manager untouched. **The 1.31 → 1.32 hop
+is the point at which the cert-manager question has to be reopened**, and reopening
+it means working through "cert-manager: removed from scope" under Findings — the
+verified matrix, the three prior errors, and the CRD-pruning hazard — rather than
+resuming from any earlier plan text.
 
-The plan's **Task 11** is this upgrade, written and reviewed but not sequenceable in
-Phases 0-4. It is deferred here rather than deleted; see the "DEFERRED" marker in its
-slot in `../plans/2026-09-13-k3s-cluster-upgrade-phases-0-4.md`. Give it its own
-snapshot gate, taken and released within the task, exactly as Task 10 does.
-
-Deadline: the 1.17 commercial LTS ends **Feb 2027**. Reaching 1.33 is what unblocks
-getting off it.
+Note when picking a target at that time: **1.17 and 1.18 support the identical
+Kubernetes range (1.29 → 1.33)**, and both are already past upstream EOL. 1.17's only
+advantage is a commercial LTS to Feb 2027. 1.21 needs ≥1.33. Whatever is current when
+the question is reopened may well be a better answer than any of these — re-derive it
+then, from the support matrix and the chart source.
 
 Open question for that phase: continue in-place, or rebuild at v1.36 with corrected
 defaults (etcd instead of SQLite, `--disable=servicelb`, possibly HA control plane).
@@ -465,12 +564,16 @@ incidental are load-bearing.
   absent" — which would defeat the pre-flight entirely.
 - **Dash-only snapshot labels.** The charset check rejects dots, so every label in the
   plan is dash-separated on purpose, not stylistically.
-- **`cert-manager/install-crd.sh` pins v1.17.4, not the newest cert-manager.** The
-  pin is bounded by the *cluster's* Kubernetes version. It previously pinned v1.21.2,
-  which requires Kubernetes ≥1.33 — the repo's own install script would have
-  installed a version this cluster cannot run. Raise it only alongside Kubernetes,
-  and never ahead of it. Task 10 still uses explicit inline commands rather than
-  running the script, so the plan and the script stay independently reviewable.
+- **`cert-manager/install-crd.sh` pins v1.14.5 — what is *installed*, not a target.**
+  The pin has moved twice for two different reasons, and the current value is the
+  only one that is a statement of fact rather than of intent. It pinned v1.21.2
+  (unrunnable here: requires Kubernetes ≥1.33), then v1.17.4 (chosen by reasoning
+  since discarded), and now v1.14.5 so that running the script is consistent with
+  the deployed state instead of silently performing an unreviewed upgrade. **The
+  rule that the pin must never get ahead of the cluster's Kubernetes version still
+  holds.** No plan runs this script; it exists for a rebuild. Its header and
+  `cert-manager/README.md` both state the deferral and require CRD ownership to be
+  verified from the chart source before the pin is raised.
 - **Two tasks in the plan write repo files: Task 6 (Step 9, top-level `README.md`)
   and Task 7 (Step 4, `cert-manager/README.md`).** An earlier revision of this spec
   said Task 7 was the only one; that claim was added one commit *after* Task 6 Step 9
