@@ -21,6 +21,36 @@
 # gate at a time; if you need an older one, delete the newer sets first and
 # accept that you are discarding the route back past them.
 #
+# THE RECENCY GUARD IS NARROWER THAN PROXMOX'S OWN CHECK. READ THIS.
+#   The VM half of the guard reads `qm listsnapshot`, which is the VM *config*
+#   snapshot view -- it lists only snapshots Proxmox took as guest snapshots.
+#   Proxmox's volume_rollback_is_possible() instead reads
+#   `zfs list -t snapshot -r <zvol>` and considers EVERY snapshot on the zvol
+#   regardless of who created it.
+#
+#   So a zvol snapshot with no corresponding VM config entry -- a `vzdump`
+#   leftover, a storage-replication snapshot (`__replicate_*`), or a manual
+#   `zfs snapshot` -- is INVISIBLE to this pre-flight but BLOCKING to Proxmox.
+#   In that case this guard passes, all 4 VMs are stopped, and the first
+#   `qm rollback` dies: cluster powered off, nothing reverted, mid-incident.
+#   That is precisely the outage the guard was added to prevent, reachable by a
+#   route the guard does not cover.
+#
+#   This is documented rather than fixed, deliberately. Closing it means
+#   resolving each VM's disks to zvol paths (parse `qm config`, resolve the
+#   storage ID through /etc/pve/storage.cfg) and listing them directly -- new,
+#   untested code in the one path that runs mid-incident, in a script that has
+#   never been run against real infrastructure at all. Fail it closed and the
+#   operator cannot roll back during an outage; fail it open and it buys
+#   nothing. The mitigation is instead to look for foreign snapshots BEFORE
+#   taking a gate, where the cost of being wrong is zero: see the pre-flight
+#   step in ../docs/superpowers/plans/2026-09-13-k3s-cluster-upgrade-phases-0-4.md
+#   (Task 0 Step 2c) and "What this guard does not cover" in ./README.md.
+#
+#   If a rollback DOES abort with "not most recent snapshot on <volid>" naming a
+#   label this script never reported, that is this gap. Do not assume the script
+#   is broken -- list the zvol's snapshots by hand and find out what made them.
+#
 # Usage: snapshot-cluster.sh {create|list|rollback|delete} <label>
 set -euo pipefail
 
@@ -100,11 +130,21 @@ vm_snapshots() { vm_snapshot_rows "$1" | cut -f1; }
 # reported for the same reason, as is *every* other snapshot when $2's own
 # timestamp is unreadable. This guard fails closed.
 #
-# Known limitation: the timestamps are rendered in the Proxmox host's local
+# Known limitation 1: the timestamps are rendered in the Proxmox host's local
 # time, so during a DST fall-back fold an hour of snapshots can compare in the
 # wrong order. PVE's own check still catches that case -- the cost is that this
 # pre-flight degrades to the old behaviour for that one hour a year, not that it
 # lets something new through.
+#
+# Known limitation 2, and it is the bigger one: THIS ONLY SEES VM CONFIG
+# SNAPSHOTS. `qm listsnapshot` lists guest snapshots; PVE's
+# volume_rollback_is_possible() reads `zfs list -t snapshot -r <zvol>` and
+# considers every snapshot on the zvol whatever created it. A vzdump leftover, a
+# storage-replication snapshot or a manual `zfs snapshot` therefore does NOT
+# appear here and DOES block the rollback -- this guard passes, the VMs stop,
+# and the first `qm rollback` fails. Unlike limitation 1, this one does let
+# something through. See the header for why it is documented rather than closed,
+# and Task 0 Step 2c in the plan for the pre-flight that covers it instead.
 vm_blocking_snapshots() {
   local rows
   rows=$(vm_snapshot_rows "$1") || return 2

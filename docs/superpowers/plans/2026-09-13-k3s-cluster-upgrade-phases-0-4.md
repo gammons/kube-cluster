@@ -45,6 +45,14 @@ succeed there by *destroying* the newer snapshot, so the "one unit" set would co
 apart in exactly this case. `snapshot-cluster.sh rollback` now checks recency on all
 five targets before it stops anything and refuses if the label is not newest.
 
+**That check is narrower than Proxmox's, and the difference can still cost the
+cluster.** It reads `qm listsnapshot` — VM *config* snapshots — while Proxmox reads
+every snapshot on the zvol. A `vzdump` leftover, a replication snapshot or a manual
+`zfs snapshot` is invisible to the pre-flight and blocking to Proxmox, which puts
+you back in exactly the failure the check was written to prevent. **Task 0 Step 2c
+is the mitigation and is not optional.** Details in `proxmox/README.md`, "What this
+guard does not cover".
+
 An earlier revision of this plan claimed the opposite: that the two cert-manager
 tasks (then 10 and 11) could leave "two gates live… That is intentional", with the
 older one still "available as a route back". **It was not available** — with a newer
@@ -195,6 +203,68 @@ snapshots change what a rollback means and which PVCs move together, and that is
 a decision about the safety mechanism — it needs its own review, not an in-flight
 edit.
 
+**2c — no snapshot the recency guard cannot see, and nothing scheduled to make one.**
+
+`snapshot-cluster.sh`'s recency check reads `qm listsnapshot`, the VM **config**
+snapshot view. Proxmox's own `volume_rollback_is_possible()` reads `zfs list -t
+snapshot -r <zvol>` and considers **every** snapshot on the zvol regardless of
+origin. A `vzdump` leftover, a storage-replication snapshot (`__replicate_*`) or a
+manual `zfs snapshot` is therefore **invisible to the pre-flight and blocking to
+Proxmox** — the guard passes, all 4 VMs stop, the first `qm rollback` dies, and the
+cluster is powered off with nothing reverted. That is the total-outage failure the
+guard exists to prevent, reached by a route it does not watch. It is documented,
+not fixed; see "What this guard does not cover" in `proxmox/README.md`. **This step
+is the mitigation, so do not skip it** — it is the only thing covering that gap.
+
+First, list every zvol snapshot on the four VM disks:
+
+```sh
+ssh root@192.168.5.1 'for id in 100 101 102 103; do
+  qm config "$id" \
+    | sed -n "s/^\(scsi\|virtio\|sata\|ide\)[0-9]\+: \([^,]*\).*/\2/p" \
+    | while read -r volid; do
+        path=$(pvesm path "$volid" 2>/dev/null) || continue
+        case "$path" in
+          /dev/zvol/*) zfs list -t snapshot -H -o name -r "${path#/dev/zvol/}" ;;
+          *) echo "NOT-A-ZVOL $volid -> $path" ;;
+        esac
+      done
+done' | sort
+./proxmox/snapshot-cluster.sh list
+```
+
+Expected: the first command lists **only** snapshots that also appear in
+`snapshot-cluster.sh list` (plus `NOT-A-ZVOL` lines for cdrom/`none` entries,
+which are informational). Anything in the first and not the second is a snapshot
+the tool cannot see and Proxmox will honour — **stop and resolve it before taking
+any gate.**
+
+**If the first command prints nothing at all, do not read that as "clean."**
+Nothing in this repo has been run against the host, and these disk keys and
+storage IDs come from documentation rather than from this machine. Empty output is
+much more likely to be a parsing miss than four VMs with no snapshots. Verify by
+hand — `ssh root@192.168.5.1 'qm config 100'` and read what the disk lines
+actually look like — and fix the `sed` before trusting the result.
+
+Second, confirm nothing is scheduled to create one *while* a gate is held. A gate
+can be clean when taken and blocked an hour later by a backup that started in
+between:
+
+```sh
+ssh root@192.168.5.1 'echo "== backup jobs =="; cat /etc/pve/jobs.cfg 2>/dev/null; \
+  cat /etc/pve/vzdump.cron 2>/dev/null; \
+  echo "== replication =="; pvesr status 2>/dev/null; \
+  cat /etc/pve/replication.cfg 2>/dev/null'
+```
+
+Expected: **no backup job and no replication job selecting VMs 100-103** (watch for
+`all: 1` / `exclude:` forms as well as explicit `vmid:` lists — an all-VMs job
+covers these four without naming them). If one exists, decide before starting:
+disable it for the duration of the plan, or accept that any gate may be
+un-rollbackable at the moment you need it. **Do not leave this to chance and do not
+discover it mid-incident.** If you disable a job, write down that you did — it has
+to go back on afterwards.
+
 - [ ] **Step 3: Record the baseline everything is compared against**
 
 **These files must outlive `/tmp`.** Tasks 2, 6, 9 and 12 diff against
@@ -275,6 +345,12 @@ roll a zvol back to anything but its newest snapshot, so a newer gate does not a
 a route back, it removes the older one. If a rollback aborts naming a blocking
 label, deleting that label is the only way past — and it throws away the route back
 past *it*. Decide that deliberately; do not do it reflexively mid-incident.
+
+**Know its blind spot before you depend on it.** The check reads `qm listsnapshot`
+and therefore sees only VM *config* snapshots; Proxmox enforces against every
+snapshot on the zvol. A rollback can abort naming a label this script never showed
+you. Read "Known limitation 2" above `vm_blocking_snapshots()` in the script and
+"What this guard does not cover" in `proxmox/README.md`, and run Task 0 Step 2c.
 
 - [ ] **Step 5: Confirm it refuses to run (agent not installed yet)**
 

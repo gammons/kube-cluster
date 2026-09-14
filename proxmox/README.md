@@ -142,11 +142,82 @@ choice, not a formality: **deleting a set discards the route back past that
 point.** If you find yourself doing it during an incident, stop and think about
 which point in time you actually want to land on.
 
+#### What this guard does not cover
+
+**The check is narrower than Proxmox's own, and the gap is not theoretical.**
+
+| | Looks at |
+|---|---|
+| `snapshot-cluster.sh` recency check | `qm listsnapshot` — the VM **config** snapshot view. Only snapshots taken as *guest* snapshots. |
+| Proxmox `volume_rollback_is_possible()` | `zfs list -t snapshot -r <zvol>` — **every snapshot on the zvol**, whatever created it. |
+
+So a zvol snapshot with no matching VM config entry is **invisible to the
+pre-flight but blocking to Proxmox**. Three realistic sources:
+
+- a **`vzdump`** leftover (a failed or interrupted backup can leave its temporary
+  snapshot behind),
+- a **storage replication** snapshot (`__replicate_*`), if a replication job is
+  ever configured for these VMs,
+- a **manual `zfs snapshot`** taken on the host.
+
+In any of those cases the pre-flight passes, all 4 VMs are stopped, and the first
+`qm rollback` fails — **the exact total-outage failure the guard exists to
+prevent, reached by a route the guard does not watch.**
+
+This is documented rather than fixed, deliberately. Closing it means resolving
+each VM's disks to zvol paths (parse `qm config`, resolve the storage ID through
+`/etc/pve/storage.cfg`) and listing them directly: new, untested code in the one
+path that runs mid-incident, in a script that has never yet been run against real
+infrastructure. Failing it closed would block rollback during an outage; failing
+it open would buy nothing.
+
+**Check for foreign snapshots before taking a gate instead**, where being wrong
+costs nothing:
+
+```sh
+# Every zvol snapshot on the k3s VM disks, whatever created it.
+# The dataset path is resolved with `pvesm path` rather than assumed -- do not
+# hardcode a pool name here, the storage ID is what the VM config actually
+# references and it maps through /etc/pve/storage.cfg.
+ssh root@192.168.5.1 'for id in 100 101 102 103; do
+  qm config "$id" \
+    | sed -n "s/^\(scsi\|virtio\|sata\|ide\)[0-9]\+: \([^,]*\).*/\2/p" \
+    | while read -r volid; do
+        path=$(pvesm path "$volid" 2>/dev/null) || continue
+        case "$path" in
+          /dev/zvol/*) zfs list -t snapshot -H -o name -r "${path#/dev/zvol/}" ;;
+          *) echo "NOT-A-ZVOL $volid -> $path" ;;
+        esac
+      done
+done' | sort
+```
+
+Cross-check that against `./snapshot-cluster.sh list`. Anything present in the
+first and absent from the second is a snapshot this tool cannot see and Proxmox
+will honour. Resolve it before you rely on a gate.
+
+> This snippet has **not** been run against the host — nothing in this repo has
+> been, and the disk keys, storage IDs and CD-ROM/`none` entries in `qm config`
+> are read from documentation rather than from this machine. Read its output
+> critically the first time: if it prints nothing at all, that is far more likely
+> to be a parsing miss than four VMs with no snapshots. `NOT-A-ZVOL` lines are
+> informational (a cdrom or a non-ZFS disk), not errors.
+
+Plan Task 0 Step 2c runs this as a pre-flight, along with a check for backup and
+replication jobs that could create a foreign snapshot *while* a gate is held.
+
+If a rollback aborts with `not most recent snapshot on <volid>` naming something
+`snapshot-cluster.sh list` never showed you, **this is that gap** — the script is
+not broken; list the zvol's snapshots by hand and find out what made them.
+
+#### DST
+
 The recency check reads the timestamps `qm listsnapshot` prints, which are in the
 Proxmox host's local time. During a DST fall-back fold an hour of snapshots can
 compare in the wrong order; Proxmox's own check still catches that case, so the
 consequence is a pre-flight that degrades to the old behaviour for one hour a
-year, not one that lets something new through.
+year, not one that lets something new through. (Unlike the gap above, which does
+let something through.)
 
 **Delete snapshots once a change is confirmed.** They are copy-on-write, so cost
 grows with divergence; leaving them indefinitely consumes `main-pool`.
