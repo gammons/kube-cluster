@@ -280,26 +280,36 @@ old manifest and are absent from the new one. Helm prunes all six. CRD deletion
 cascades to **every Certificate, CertificateRequest, Issuer, ClusterIssuer, Order
 and Challenge in the cluster.**
 
-> **One caveat, stated deliberately rather than inferred.** The chart evidence proves
-> the *chart* supplies no `keep` annotation and that its CRDs are templated. Whether
-> the six live CRDs carry a `keep` annotation from some other source, and whether
-> they are in the current release manifest at all, depends on how this cluster was
-> actually installed — and that cannot be read from this repo. It must be checked
-> against the live cluster before any upgrade:
->
-> ```sh
-> kubectl --context local-k3s get crd \
->   certificates.cert-manager.io certificaterequests.cert-manager.io \
->   issuers.cert-manager.io clusterissuers.cert-manager.io \
->   orders.acme.cert-manager.io challenges.acme.cert-manager.io \
->   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.helm\.sh/resource-policy}{"\n"}{end}'
-> helm --kube-context local-k3s get manifest cert-manager -n cert-manager \
->   | grep -c CustomResourceDefinition
-> ```
->
-> Assuming the answer is exactly the failure mode this whole section exists to
-> prevent. The chart facts are settled; the live state is not, and no amount of
-> reading the repo will settle it.
+### Live-state confirmation — measured 2026-09-13, not inferred
+
+The chart facts above prove only what the *chart* supplies. Whether the **live** CRDs
+are annotated, and whether they are in the current release manifest, cannot be read
+from this repo. That gap was the subject of the three wrong claims, so it was measured
+against the cluster rather than reasoned about:
+
+```
+$ kubectl --context local-k3s get crd -o json | jq -r '...'
+orders.acme.cert-manager.io           resource-policy=<NONE>   managed-by=Helm
+certificaterequests.cert-manager.io   resource-policy=<NONE>   managed-by=Helm
+certificates.cert-manager.io          resource-policy=<NONE>   managed-by=Helm
+clusterissuers.cert-manager.io        resource-policy=<NONE>   managed-by=Helm
+challenges.acme.cert-manager.io       resource-policy=<NONE>   managed-by=Helm
+issuers.cert-manager.io               resource-policy=<NONE>   managed-by=Helm
+
+$ helm get manifest cert-manager -n cert-manager | grep -c "kind: CustomResourceDefinition"
+6
+
+$ helm get values cert-manager -n cert-manager
+installCRDs: true
+```
+
+**Confirmed: all six live CRDs are Helm-owned, present in the release manifest, and
+carry no `keep` annotation.** The worst case is the real case. An upgrade rendering
+zero CRDs deletes all six and cascades.
+
+Re-measure before acting — this is a point-in-time reading, and the whole reason this
+section exists is that plausible-sounding cert-manager claims kept turning out to be
+wrong. The commands above are the check; run them, do not trust this table.
 
 **5. The v1.17.4 release manifest carries `helm.sh/resource-policy: keep` on all 6
 CRDs.** Verified by fetching `cert-manager.crds.yaml` for v1.17.4: 6
