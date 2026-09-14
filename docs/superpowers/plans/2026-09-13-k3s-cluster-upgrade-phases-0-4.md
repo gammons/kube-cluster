@@ -70,6 +70,45 @@ tasks. Every remaining gated task takes and releases its gate within itself.
 
 ## Global Constraints
 
+- **Run every snippet in `bash`, from the repo root.** Both halves of this have
+  been assumed throughout and stated nowhere, and both bite silently.
+
+  **Shell — use `bash`, not `zsh`.** This is not a preference. Several snippets
+  feed a sudo password and a file down one stdin stream
+  (`{ printf '%s\n' "$PW"; cat k3s/config.yaml; } | ssh …`). The bug that form
+  exists to avoid — piping *and* redirecting into the same `ssh` — **works by
+  accident under zsh**, because `MULTIOS` concatenates the two sources, and fails
+  silently under `bash`/`sh`, where the redirect wins and the password is
+  discarded. A plan written and spot-checked in zsh can therefore contain a
+  construct that only ever worked there. Everything here is written for `bash`;
+  if your login shell is zsh (the workstation's default), start one explicitly:
+
+  ```sh
+  bash            # then run the task's snippets inside it
+  echo "$BASH_VERSION"   # non-empty confirms you are in bash
+  ```
+
+  Do not run these under `sh`/`dash` either: `<<<`, `$SECONDS` and `local` appear
+  in `proxmox/snapshot-cluster.sh`, which declares `#!/usr/bin/env bash` and must
+  be invoked as `./proxmox/snapshot-cluster.sh`, never `sh proxmox/…`.
+
+  **Working directory — the repo root**, i.e. the directory containing
+  `proxmox/`, `k3s/` and `velero/`. Every path in this plan is relative to it:
+  `./proxmox/snapshot-cluster.sh`, `-f velero/values.yml`,
+  `--set-file credentials.secretContents.cloud=./velero/credentials-velero`, and
+  `$BASE=.superpowers/sdd/…`. `$BASE` in particular is a **relative** path, so
+  running a later task from a different directory silently writes a second
+  baseline tree somewhere else and the `diff`s compare nothing to nothing.
+  Confirm before starting any task, and again in any new shell:
+
+  ```sh
+  test -f proxmox/snapshot-cluster.sh && test -d .superpowers && echo "repo root OK" \
+    || echo "WRONG CWD -- cd to the repo root before running anything"
+  ```
+
+  The one exception is `~/sudo-pw.txt`, which is deliberately outside the repo
+  (and must stay there — it is a plaintext password and the repo is a git tree).
+
 - **Always pass `--context local-k3s` to `kubectl` and `--kube-context local-k3s` to `helm`.** The kubeconfig holds 8 contexts including `aws-truelist-prod` and `production`; `current-context` has previously pointed at a remote production cluster.
 - **Always fully-qualify `backups.velero.io`.** Leftover Longhorn CRDs from the 2y-`Terminating` `longhorn-system` namespace shadow the short name `backup`.
 - **Never echo the sudo password.** Read it from `~/sudo-pw.txt` into a variable and pipe it. The working pattern, verified on all 4 nodes:
@@ -622,28 +661,59 @@ Type `rollbacktest` at the confirmation prompt. Takes several minutes (stops, ro
 assert Step 2's receipt first. Without it, an absent canary is equally consistent
 with a working rollback and with a canary that was never written.
 
+The prose says "stop here" if the receipt is missing, and now the code does too.
+It previously printed `ABORT` and carried straight on into the canary checks —
+which is the failure this very step exists to catch, reproduced in the checker.
+Run this as one block; the parentheses make it a subshell so `exit 1` ends the
+step rather than your login shell:
+
 ```sh
+(
+set -u
 test -f /tmp/rollback-canary-written.txt || {
   echo "ABORT: no Step 2 receipt. The canaries were never confirmed written, so"
   echo "       'canary gone' below would prove nothing. Re-run Step 1-3 properly;"
   echo "       do not record this rollback as verified."
+  exit 1
 }
 cat /tmp/rollback-canary-written.txt   # when the canaries were confirmed written
+)
 ```
 
 Expected: the receipt exists and its timestamp is **before** the Step 3 rollback.
-If the `ABORT` prints, stop here — the rest of this step cannot be interpreted.
+If the `ABORT` prints, **stop here** — the rest of this step cannot be interpreted.
+
+**stderr is no longer suppressed on the canary read.** It previously ended in
+`2>/dev/null`, which meant a `sudo` auth failure printed nothing at all — and the
+note under it asked the reader to notice an *empty* line and not mistake it for
+`canary gone`. That is a trap to be removed, not documented. Capture the result and
+test it explicitly instead, so "no answer" and "canary gone" cannot look alike:
 
 ```sh
+(
+set -u
 PW=$(tr -d '\n' < ~/sudo-pw.txt)
-printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-node-1 \
-  'sudo -S -p "" sh -c "test -f /root/rollback-canary.txt && echo CANARY STILL PRESENT || echo canary gone"' 2>/dev/null
-ssh root@192.168.5.1 'test -f /main-pool/k3s-nfs/rollback-canary.txt && echo "NFS CANARY STILL PRESENT" || echo "nfs canary gone"'
+
+vm=$(printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-node-1 \
+  'sudo -S -p "" sh -c "test -f /root/rollback-canary.txt && echo PRESENT || echo GONE"')
+case "$vm" in
+  GONE)    echo "vm canary gone" ;;
+  PRESENT) echo "ABORT: VM CANARY STILL PRESENT -- the rollback did not revert the VM disk"; exit 1 ;;
+  *)       echo "ABORT: could not read the VM canary (got: '${vm}'). Check stderr above"
+           echo "       for a sudo auth failure. This is a FAILED CHECK, not a pass."; exit 1 ;;
+esac
+
+nfs=$(ssh root@192.168.5.1 \
+  'test -f /main-pool/k3s-nfs/rollback-canary.txt && echo PRESENT || echo GONE')
+case "$nfs" in
+  GONE)    echo "nfs canary gone" ;;
+  PRESENT) echo "ABORT: NFS CANARY STILL PRESENT -- the dataset was not rolled back"; exit 1 ;;
+  *)       echo "ABORT: could not read the NFS canary (got: '${nfs}')."; exit 1 ;;
+esac
+)
 ```
 
-Expected: `canary gone` and `nfs canary gone`. Note that `2>/dev/null` on the
-first line means a sudo failure here also prints nothing at all — an *empty* line
-is not `canary gone` and must be treated as a failed check, not a pass.
+Expected: `vm canary gone` and `nfs canary gone`, with no `ABORT`.
 
 Four VMs have just been restarted, so confirm the API is actually answering
 before reading anything from it:
@@ -669,16 +739,28 @@ Expected: `API ready`, 4 nodes `Ready`, and no unexpected non-Running pods beyon
 
 - [ ] **Step 5: Compare against the Task 0 baseline**
 
+The missing-baseline guard now **stops** instead of printing `ABORT` and falling
+into the `diff` anyway. `diff` against a nonexistent file exits non-zero with
+`No such file or directory`, which in a hurry reads like a detected difference —
+so the old form could be misread as either a pass or a real drift, and was neither:
+
 ```sh
+(
+set -u
 BASE=.superpowers/sdd/2026-09-13-k3s-cluster-upgrade-phases-0-4/baseline
-test -s "$BASE/lb.txt" || echo "ABORT: no baseline -- regenerate it per Task 0 Step 3 before reading this diff"
+test -s "$BASE/lb.txt" || {
+  echo "ABORT: no baseline at $BASE/lb.txt -- regenerate it per Task 0 Step 3"
+  echo "       before reading this diff. A diff against a missing file proves"
+  echo "       nothing, and its error is easy to misread as drift."
+  exit 1
+}
 kubectl --context local-k3s get svc -A -o json | jq -r '.items[]|select(.spec.type=="LoadBalancer")|"\(.metadata.namespace)/\(.metadata.name) \((.status.loadBalancer.ingress//[])|map(.ip)|join(","))"' | sort > "$BASE/after-rollbacktest-lb.txt"
 diff "$BASE/lb.txt" "$BASE/after-rollbacktest-lb.txt" && echo "LB IPs unchanged"
+)
 ```
 
 Expected: `LB IPs unchanged`, with no `ABORT`. If the baseline is missing, Task 0
-Step 3 says how to regenerate it and what the result must match — a `diff` against
-a file that does not exist proves nothing.
+Step 3 says how to regenerate it and what the result must match.
 
 - [ ] **Step 6: Delete the test snapshot and the receipt**
 
@@ -821,6 +903,7 @@ task verifies it, then applies it to the cluster.
 - [ ] **Step 1: Record the pre-change state**
 
 ```sh
+BASE=.superpowers/sdd/2026-09-13-k3s-cluster-upgrade-phases-0-4/baseline
 kubectl --context local-k3s get schedules.velero.io velero-homelab-daily -n velero -o jsonpath='{.spec.template.includedNamespaces}'; echo
 helm --kube-context local-k3s history velero -n velero
 kubectl --context local-k3s get backups.velero.io -n velero --sort-by=.metadata.creationTimestamp \
@@ -828,6 +911,33 @@ kubectl --context local-k3s get backups.velero.io -n velero --sort-by=.metadata.
 ```
 
 Expected: `["home-assistant","dev-box","openclaw","openclaw-dottie","openclaw-stonk","immich"]`
+
+**Capture the live Helm values before overwriting them.** Step 3 runs `helm upgrade
+-f velero/values.yml`, and `-f` **replaces** the release's user-supplied values
+rather than merging with them. Every value currently set on the release and absent
+from that file resets to the chart default — silently, with a successful
+`STATUS: deployed`. `velero/values.yml` carries few keys, and Velero's release is
+known to hold at least one thing that is not in it: the `credentials.secretContents`
+that Step 3 has to re-supply with `--set-file`. That one is handled; nothing has
+checked for the others.
+
+```sh
+mkdir -p "$BASE"
+helm --kube-context local-k3s get values velero -n velero -o yaml \
+  > "$BASE/velero-values-before.yaml"
+cat "$BASE/velero-values-before.yaml"
+git status --porcelain -- .superpowers/   # must print nothing
+```
+
+**Diff it against `velero/values.yml` and account for every key present live and
+absent from the file.** Pay particular attention to anything under
+`configuration.`, `initContainers` (the AWS plugin lives there) and
+`deployNodeAgent` / `defaultVolumesToFsBackup` — the spec records that
+`--default-volumes-to-fs-backup` is set server-side, and if that came from a Helm
+value rather than from the Schedule it will reset here, quietly turning 105
+`PodVolumeBackups` into zero while the backup still reports `Completed`. Carry
+anything you need into `velero/values.yml` in its own reviewed commit before
+running Step 3.
 
 **Write down two numbers from this step.** Nothing else records either, and both
 are needed later:
@@ -974,30 +1084,73 @@ Both have a `deployed` earlier revision serving traffic; only the latest upgrade
 
 ```sh
 helm --kube-context local-k3s list -A --failed
+helm --kube-context local-k3s history home-assistant -n home-assistant
+helm --kube-context local-k3s history openclaw-stonk -n openclaw-stonk
 ```
 
-Expected: `home-assistant` (rev 7) and `openclaw-stonk` (rev 4), both `failed`.
+Expected: `home-assistant` and `openclaw-stonk`, both `failed`. The spec's reading
+was rev 7 and rev 4 respectively, with rev 6 and rev 3 the last `deployed` ones.
+
+**Write down four numbers from the two `history` outputs, and use those — not the
+ones above.** Tasks 4 and 8 both read their rollback target live rather than
+hardcoding it; this task must do the same, and previously did not. For each
+release record:
+
+- **the current failed revision** — the rollback trigger's way back, and the thing
+  that proves you are rolling back what you think you are;
+- **the most recent `deployed` revision** — the rollback *target* for Steps 2 and 3.
+
+Numbers in this plan are days old and move with the cluster: any `helm upgrade`,
+including a re-attempt of the failed one, adds a revision. **Check the chart
+version column too.** The reasoning below — that these rollbacks are near no-ops —
+holds only because the target revision is the *same chart version* as the failed
+one. If the last `deployed` revision is an older chart version, rolling back is a
+downgrade with its own consequences: stop and decide deliberately rather than
+proceeding on the strength of this paragraph.
 
 - [ ] **Step 2: Roll `home-assistant` back to its last good revision**
 
-Revision 7 failed with `updates to statefulset spec for fields other than 'replicas', 'ordinals', 'template', 'updateStrategy', 'persistentVolumeClaimRetentionPolicy' and 'minReadySeconds' are forbidden` — the chart tried to change an immutable StatefulSet field. Revision 6 is the same chart version (`0.3.54`), so rolling back is close to a no-op.
+The failed revision (rev 7 when the spec was written) failed with `updates to statefulset spec for fields other than 'replicas', 'ordinals', 'template', 'updateStrategy', 'persistentVolumeClaimRetentionPolicy' and 'minReadySeconds' are forbidden` — the chart tried to change an immutable StatefulSet field. Its predecessor was the same chart version (`0.3.54`), so rolling back is close to a no-op.
+
+**Substitute the last `deployed` revision you recorded in Step 1.** Do not paste a
+literal `6` from this document:
 
 ```sh
-helm rollback home-assistant 6 --kube-context local-k3s -n home-assistant --wait --timeout 5m
+(
+set -u
+HA_TARGET=""      # <-- the last `deployed` revision from Step 1. Spec's reading was 6.
+[ -n "$HA_TARGET" ] || {
+  echo "ABORT: HA_TARGET is unset. Read it from 'helm history home-assistant',"
+  echo "       do not paste a number from the plan -- it is days old."
+  exit 1
+}
+helm rollback home-assistant "$HA_TARGET" --kube-context local-k3s -n home-assistant --wait --timeout 5m
 helm --kube-context local-k3s status home-assistant -n home-assistant | head -4
 kubectl --context local-k3s get pods -n home-assistant
+)
 ```
 
 Expected: `STATUS: deployed`, and `home-assistant-0` `Running`.
 
 - [ ] **Step 3: Roll `openclaw-stonk` back to its last good revision**
 
-Revision 4 failed with `conflict with "kubectl-patch" using apps/v1: .spec.template.spec.volumes[name="data"].persistentVolumeClaim.claimName` — someone `kubectl patch`ed the claim name, so Helm's apply conflicts over field ownership. Revision 3 is the same chart version.
+The failed revision (rev 4 when the spec was written) failed with `conflict with "kubectl-patch" using apps/v1: .spec.template.spec.volumes[name="data"].persistentVolumeClaim.claimName` — someone `kubectl patch`ed the claim name, so Helm's apply conflicts over field ownership. Its predecessor was the same chart version.
+
+**Substitute the last `deployed` revision you recorded in Step 1**, as in Step 2:
 
 ```sh
-helm rollback openclaw-stonk 3 --kube-context local-k3s -n openclaw-stonk --wait --timeout 5m
+(
+set -u
+STONK_TARGET=""   # <-- the last `deployed` revision from Step 1. Spec's reading was 3.
+[ -n "$STONK_TARGET" ] || {
+  echo "ABORT: STONK_TARGET is unset. Read it from 'helm history openclaw-stonk',"
+  echo "       do not paste a number from the plan -- it is days old."
+  exit 1
+}
+helm rollback openclaw-stonk "$STONK_TARGET" --kube-context local-k3s -n openclaw-stonk --wait --timeout 5m
 helm --kube-context local-k3s status openclaw-stonk -n openclaw-stonk | head -4
 kubectl --context local-k3s get pods -n openclaw-stonk
+)
 ```
 
 Expected: `STATUS: deployed`, pod `Running`.
@@ -1029,14 +1182,16 @@ the way back:
 
 ```sh
 helm --kube-context local-k3s history home-assistant -n home-assistant
-helm --kube-context local-k3s rollback home-assistant 7 -n home-assistant   # back to the failed rev
+# back to the revision you came FROM -- the failed revision recorded in Step 1.
+# Read it from the history above; do not paste a number from this document.
+helm --kube-context local-k3s rollback home-assistant <failed-rev-from-Step-1> -n home-assistant
 ```
 
 Rolling forward to the revision you came from is reversible, so try that first.
 If a pod still cannot start after that, the cause is a pre-existing problem with
 the workload — these releases were *already* `failed` before this task touched
-them, and rev 6/3 are the same chart versions as 7/4. Diagnose it as a workload
-fault. If you decide you need the option of a whole-cluster rollback before
+them, and the targets are the same chart versions as the failed revisions.
+Diagnose it as a workload fault. If you decide you need the option of a whole-cluster rollback before
 digging further, **take a snapshot first** (`./proxmox/snapshot-cluster.sh create
 pre-helm-triage`) rather than acting as though one already exists — and delete it
 when you are done.
@@ -1368,6 +1523,7 @@ and committed in Phase A. This task verifies them, then applies the upgrade.
 - [ ] **Step 1: Record the pre-change state**
 
 ```sh
+BASE=.superpowers/sdd/2026-09-13-k3s-cluster-upgrade-phases-0-4/baseline
 helm --kube-context local-k3s list -n tailscale
 helm --kube-context local-k3s history tailscale-operator -n tailscale
 kubectl --context local-k3s get pods -n tailscale --no-headers | wc -l
@@ -1382,11 +1538,71 @@ Record the operator version, the pod count, and how many OVH/production targets 
 trigger needs it, and nothing else in this task captures it — do not assume `1`
 just because the release has only ever been upgraded once.
 
+**Capture the live Helm values, too — this is the one that silently loses
+settings.** Step 7 runs `helm upgrade -f tailscale/values.yml`, and that file sets
+exactly one key (`operatorConfig.logging`). `helm upgrade -f` **replaces** the
+release's user-supplied values rather than merging with them, so **every** value
+currently set on the release and absent from that file resets to the chart default
+— silently, with a successful `STATUS: deployed`. Nobody has recorded what is
+actually set. Read it before you overwrite it:
+
+```sh
+mkdir -p "$BASE"
+helm --kube-context local-k3s get values tailscale-operator -n tailscale -o yaml \
+  > "$BASE/tailscale-values-before.yaml"
+cat "$BASE/tailscale-values-before.yaml"
+git status --porcelain -- .superpowers/   # must print nothing
+```
+
+It lands in `$BASE` rather than `/tmp` for the same reason as the Task 0 baseline:
+it is an input to this task's recovery path. **Diff it against
+`tailscale/values.yml` and account for every key that appears in the live values
+and not in the file.** Expect `oauth.clientId`/`oauth.clientSecret` to be there —
+those are deliberately being dropped, which is the whole point of Steps 2 and 3.
+Anything *else* is an unrecorded live setting: decide deliberately whether to carry
+it into `tailscale/values.yml` (in its own reviewed commit) or to let it reset. Do
+not discover it from a behaviour change after the upgrade.
+
 - [ ] **Step 2: Rotate the OAuth credential and move it out of Helm values**
+
+> ## STOP — human required
+>
+> **An agent cannot complete this step.** Creating a Tailscale OAuth client is an
+> interactive action in the Tailscale admin console, behind a login an executing
+> agent does not have and should not be given. There is no API path here that the
+> rest of this plan's credentials reach.
+>
+> **If you are an agent executing task-by-task: stop at the end of Step 1 and ask.**
+> Do not improvise, do not reuse the existing client, and do not skip ahead to
+> Step 3 — Step 3 annotates a Secret that Step 2 is supposed to have just
+> rewritten, and running it against the old credential produces a
+> `keep`-annotated Secret holding the **exposed** secret, which looks exactly like
+> success.
+>
+> **Before replacing the client, capture the current one's scopes.** They are not
+> recorded anywhere in this repo — `tailscale/values.yml` holds only
+> `operatorConfig.logging`, and `tailscale/README.md` deliberately keeps the
+> credential out of git, so neither says what the client is allowed to do. The
+> operator needs at minimum device-write scope to create the ~25 egress proxies;
+> guessing at the scopes produces an operator that comes up cleanly and then fails
+> to reconcile, which Step 8's target count will catch only after the upgrade.
+> Read the existing client's scopes in the admin console and **write them down in
+> this task's notes** before creating its replacement.
 
 The current values hold `oauth.clientSecret` in plaintext, so they cannot be committed. The chart creates the `operator-oauth` Secret from those values, and that Secret **already exists** (671d old) — but it is owned by the Helm release, not adopted from outside it. Step 3 deals with the consequence; do not skip it.
 
-**Rotate the credential first** — it was exposed in a terminal session on 2026-09-13. Create a new OAuth client in the Tailscale admin console with the same scopes, then:
+**Rotate the credential** — it was exposed in a terminal session on 2026-09-13.
+
+- [ ] **Step 2a (human): record the current client's scopes**
+
+In the Tailscale admin console, open the existing OAuth client and note its
+scopes and tags verbatim. Nothing in the repo or the cluster records them.
+
+- [ ] **Step 2b (human): create the replacement client**
+
+Create a new OAuth client **with the same scopes and tags** recorded in 2a.
+
+- [ ] **Step 2c: install the new credential into the cluster**
 
 ```sh
 kubectl --context local-k3s create secret generic operator-oauth -n tailscale \
@@ -1394,6 +1610,37 @@ kubectl --context local-k3s create secret generic operator-oauth -n tailscale \
   --from-literal=client_secret='<new-client-secret>' \
   --dry-run=client -o yaml | kubectl --context local-k3s apply -f -
 ```
+
+Then confirm both keys are non-empty before going near Step 3 — an `apply` with an
+empty literal succeeds and leaves the operator unable to authenticate:
+
+```sh
+kubectl --context local-k3s get secret operator-oauth -n tailscale \
+  -o jsonpath='{.data.client_id}{"\n"}{.data.client_secret}{"\n"}' \
+  | awk 'NF { n++ } END { print (n == 2) ? "both keys present" : "ABORT: " n " of 2 keys present" }'
+```
+
+Expected: `both keys present`.
+
+- [ ] **Step 2d: do NOT revoke the old client yet — note that it must be revoked**
+
+The old credential is exposed and **must** be revoked, but **not here.** Revocation
+is **Step 9**, after the upgrade has been verified. Two reasons, and the second is
+not obvious:
+
+1. Until Step 7 restarts it, the operator pod is still running on the **old**
+   credential — Step 2c changed the Secret, not the running process. Revoking now
+   breaks proxy reconciliation before the upgrade has even started.
+2. **`helm rollback` restores the old credential into the Secret.** The previous
+   revision's manifest *did* render `operator-oauth` from `oauth.clientId` /
+   `oauth.clientSecret`, so rolling back re-applies it with the **exposed** values.
+   `helm.sh/resource-policy: keep` does not prevent this — `keep` blocks
+   *deletion*, not *overwrite*. So this task's documented recovery path depends on
+   the old credential still working. Revoke it before Step 7 and a rollback leaves
+   you with an operator holding a revoked secret and no route back.
+
+Write it on the task's checklist now so it cannot be lost; it is the whole point of
+the rotation and nothing else in this plan does it.
 
 - [ ] **Step 3: Protect the Secret from Helm's pruner**
 
@@ -1511,7 +1758,50 @@ kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-
 
 Expected: every `tailscale` pod `Running`, and the `up` count matching Step 1. If lower after 5 minutes, check `kubectl logs -n tailscale deploy/operator`.
 
-- [ ] **Step 9: Verify the committed `tailscale/README.md`**
+- [ ] **Step 9 (human): revoke the OLD OAuth client**
+
+**This is the step Step 2d deferred, and it is the point of the rotation.** The old
+client secret was exposed in a terminal session on 2026-09-13; creating a
+replacement did not invalidate it. Nothing else in this plan revokes it, so if this
+step is skipped the exposure is permanent and Steps 2a-2c only added a *second*
+working credential.
+
+**Only do this once Step 8 has passed** — the Secret is present, every `tailscale`
+pod is `Running`, and the OVH/production `up` target count matches Step 1. Until
+then the old credential is this task's rollback path (see Step 2d: `helm rollback`
+re-applies the old manifest and overwrites the Secret with the exposed values).
+
+In the Tailscale admin console, delete the **old** OAuth client — the one whose
+scopes you recorded in Step 2a — and confirm in the console that it is gone. Take
+care to delete the old one and not the replacement; check the client ID against the
+one now in the cluster:
+
+```sh
+kubectl --context local-k3s get secret operator-oauth -n tailscale \
+  -o jsonpath='{.data.client_id}' | base64 -d; echo
+```
+
+The ID printed here is the one that must **survive**. Anything else goes.
+
+Then confirm the operator is unaffected by the revocation — it should be, since it
+is authenticating with the new credential, but the whole reason this step is last
+is that assumptions about credentials in this task have been wrong before:
+
+```sh
+sleep 60
+kubectl --context local-k3s logs -n tailscale deploy/operator --tail=30 | grep -iE "auth|401|403|forbidden|unauthor" || echo "no auth errors in the last 30 lines"
+kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/targets?state=active' 2>/dev/null | \
+  jq -r '[.data.activeTargets[]|select(.labels.cluster=="ovh" or .labels.cluster=="production")]|group_by(.health)|.[]|"\(.[0].health): \(length)"'
+```
+
+Expected: no auth errors, and the `up` count still matching Step 1.
+
+**If revocation does break the operator, do not restore the old client** — it is
+exposed and must not come back. Create another client (repeat Steps 2a-2c) and
+investigate why the replacement was not being used.
+
+- [ ] **Step 10: Verify the committed `tailscale/README.md`**
 
 `tailscale/README.md` was authored and committed in Phase A (`b8141a3`). **Do not
 rewrite it.** Confirm it is present and unmodified:
@@ -1530,7 +1820,7 @@ The install snippet in that file uses a `<version>` placeholder on purpose — t
 repo's prose must never assert a live version, because it goes stale silently.
 Do not substitute `1.102.3` into it.
 
-- [ ] **Step 10: Delete the gate snapshot**
+- [ ] **Step 11: Delete the gate snapshot**
 
 `tailscale/values.yml` and `tailscale/README.md` are already committed, so there
 is nothing to stage. Confirm the tree is clean rather than attempting a commit:
@@ -1542,7 +1832,25 @@ git status --porcelain -- tailscale/values.yml tailscale/README.md
 
 Expected: no `git status` output, then `OK: snapshot set 'pre-tailscale' deleted`.
 
-**Rollback trigger:** the `operator-oauth` Secret is missing after the upgrade, OVH/production `up` target count does not return to the Step 1 value within 5 minutes, or the operator pod crash-loops. Recovery: `helm rollback tailscale-operator <prev-rev> --kube-context local-k3s -n tailscale`, where `<prev-rev>` is the `deployed` revision recorded in Step 1 (`helm --kube-context local-k3s history tailscale-operator -n tailscale` if you did not write it down); if that fails, `./proxmox/snapshot-cluster.sh rollback pre-tailscale`. Note that `helm rollback` will **not** bring back a pruned Secret with a new credential in it — that has to be re-created from the Tailscale admin console.
+**Rollback trigger:** the `operator-oauth` Secret is missing after the upgrade, OVH/production `up` target count does not return to the Step 1 value within 5 minutes, or the operator pod crash-loops. Recovery: `helm rollback tailscale-operator <prev-rev> --kube-context local-k3s -n tailscale`, where `<prev-rev>` is the `deployed` revision recorded in Step 1 (`helm --kube-context local-k3s history tailscale-operator -n tailscale` if you did not write it down); if that fails, `./proxmox/snapshot-cluster.sh rollback pre-tailscale`.
+
+**Two things about the Secret and `helm rollback`, which pull in opposite directions
+and are both easy to get wrong:**
+
+- `helm rollback` will **not** bring back a Secret that was *pruned*. If the Step 3
+  annotation was missed and Helm deleted it, rollback does not recreate the
+  credential — it has to be made again in the Tailscale admin console.
+- If the Secret still exists, `helm rollback` **overwrites** it. The previous
+  revision's manifest rendered `operator-oauth` from `oauth.clientId` /
+  `oauth.clientSecret`, so rolling back puts the **old, exposed** credential back
+  into the cluster. `helm.sh/resource-policy: keep` does not stop this — `keep`
+  blocks deletion, not overwrite.
+
+So a rollback taken **before Step 9** lands on a working (if exposed) credential,
+which is exactly why Step 9 is last. A rollback taken **after Step 9** lands on a
+*revoked* one and the operator will not authenticate: in that case re-run Steps
+2a-2c to mint a fresh client, and do not restore the revoked one. Either way, **the
+exposed credential must end up revoked** — if you roll back, Step 9 is still owed.
 
 ---
 
@@ -1564,6 +1872,28 @@ cat "$BASE/lb.txt"
 ```
 
 Expected: images at `v0.14.5`, pool `192.168.20.1-255`, the 5 LB IPs, and no `ABORT`.
+
+**Also record whether MetalLB's own metrics are being scraped right now.** Step 8
+checks this after the upgrade, and that check is only interpretable against a
+"before" — 0.16.0 moves the metrics port and makes it HTTPS, so "no MetalLB targets"
+afterwards means something entirely different depending on whether there were any
+beforehand. Nothing else captures it:
+
+```sh
+kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/targets?state=active' 2>/dev/null | \
+  jq -r '[.data.activeTargets[]|select((.labels.job+.labels.namespace)|test("metallb";"i"))]
+         | if length == 0 then "NO METALLB TARGETS AT ALL (pre-existing)"
+           else (group_by(.health)[]|"\(.[0].health): \(length)") end' \
+  | tee "$BASE/metallb-targets-before.txt"
+kubectl --context local-k3s get servicemonitor,podmonitor -A -o json \
+  | jq -r '.items[]|select((.metadata.name+.metadata.namespace)|test("metallb";"i"))|"\(.kind) \(.metadata.namespace)/\(.metadata.name)"' \
+  | tee -a "$BASE/metallb-targets-before.txt"
+```
+
+If this prints `NO METALLB TARGETS AT ALL (pre-existing)` and no monitors, then
+MetalLB metrics are already unscraped and Step 8 has nothing to protect — note that
+and move on. Otherwise Step 8's job is to prove the same thing still reports.
 
 - [ ] **Step 2: Back up the CRs (they must survive the manifest apply)**
 
@@ -1630,7 +1960,77 @@ kubectl --context local-k3s get ingress -A
 
 Expected: `ALL 5 LB IPs UNCHANGED`, each IP answering (any HTTP status proves L2 works), and all 6 Ingresses still showing `192.168.20.1`.
 
-- [ ] **Step 8: Verify the committed README and delete the gate snapshot**
+- [ ] **Step 8: Verify MetalLB's own metrics are still being scraped**
+
+**0.16.0 changed how MetalLB serves metrics, and this task's acceptance test cannot
+see it.** Step 7 proves L2 announcement still works — IPs assigned, traffic
+answering, Ingresses intact. Every one of those would keep passing with MetalLB's
+metrics endpoint completely unscraped, and this cluster runs kube-prometheus-stack,
+so that lands as a **silent monitoring regression**: no alert fires, because the
+thing that would fire the alert is the thing that stopped reporting.
+
+Two changes, both verified against the upstream manifests actually being applied:
+
+| | v0.14.5 | v0.16.1 |
+|---|---|---|
+| metrics port | **7472** | **9120** |
+| scheme | plain HTTP | **HTTPS, self-signed** |
+| pod annotation | `prometheus.io/port: "7472"` | `prometheus.io/port: "9120"` |
+| `prometheus.io/scheme` | absent | **still absent** |
+
+The 0.16.0 release note is explicit: *"Replace kube-rbac-proxy with native TLS and
+RBAC… The old HTTP endpoints are no longer available, they are now HTTPS served by
+self-signed certificates."*
+
+**The 0.16.1 fix does not help here.** 0.16.1 fixed exactly this — but only in the
+**Helm chart**, by emitting `scheme: https` on the chart's annotations, PodMonitor
+and ServiceMonitor. **This cluster installs MetalLB from the raw
+`metallb-native.yaml` manifest, not the chart** (see `metallb/README.md`), and that
+manifest ships **no ServiceMonitor and no PodMonitor at all**, and **no
+`prometheus.io/scheme` annotation**. So whatever scrapes MetalLB here is something
+outside the manifest, and nothing in the upgrade updates it.
+
+So expect breakage from **both** directions: any config still pointing at port 7472
+now targets a closed port, and anything reaching 9120 over HTTP hits a TLS listener.
+
+```sh
+# 1. What, if anything, is scraping MetalLB today?
+kubectl --context local-k3s get servicemonitor,podmonitor -A -o json \
+  | jq -r '.items[]|select((.metadata.name+.metadata.namespace)|test("metallb";"i"))|"\(.kind) \(.metadata.namespace)/\(.metadata.name) scheme=\(.spec.endpoints[0].scheme // "http(default)") port=\(.spec.endpoints[0].port // .spec.endpoints[0].targetPort)"'
+grep -rn "7472\|9120\|metallb" prometheus/additional-scrape-configs.yml || echo "no metallb entry in additional-scrape-configs.yml"
+
+# 2. Are the targets actually up in Prometheus?
+kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/targets?state=active' 2>/dev/null | \
+  jq -r '[.data.activeTargets[]|select((.labels.job+.labels.namespace)|test("metallb";"i"))]
+         | if length == 0 then "NO METALLB TARGETS AT ALL"
+           else (group_by(.health)[]|"\(.[0].health): \(length)") end'
+
+# 3. Is a metric actually arriving?
+kubectl --context local-k3s exec -n monitoring prometheus-kube-prometheus-stack-prometheus-0 -c prometheus -- \
+  wget -qO- 'http://localhost:9090/api/v1/query?query=metallb_k8s_client_config_loaded_bool' 2>/dev/null | \
+  jq -r 'if (.data.result|length) == 0 then "NO DATA -- metallb metrics are not being ingested" else (.data.result[]|"\(.metric.job // "?") => \(.value[1])") end'
+```
+
+**Run all three before Step 3's gate is released.** Record what they say **before**
+the upgrade too — if MetalLB's metrics were already unscraped on 0.14.5, that is a
+pre-existing gap and not this task's problem, and you can only know that by having
+looked. (If you did not capture it at Step 1, say so rather than inferring.)
+
+Expected **after** the upgrade: whatever was reporting at Step 1 is still reporting.
+`NO METALLB TARGETS AT ALL`, `NO DATA`, or a `down` count where Step 1 had `up`, all
+mean the same thing — the upgrade broke metrics collection.
+
+**This is not a rollback trigger.** Losing MetalLB's own metrics does not affect
+service traffic, and rolling the whole cluster back for it would be
+disproportionate. Fix it forward: point the scrape config at port **9120** with
+`scheme: https` and `insecureSkipVerify: true` (the certificate is self-signed, so
+verification cannot succeed without wiring in a CA). **Record it as a follow-up
+before releasing the gate in Step 9**, so it cannot be quietly forgotten — an
+unnoticed monitoring gap is exactly the failure mode `proxmox/README.md` was written
+about after a pool ran degraded for weeks.
+
+- [ ] **Step 9: Verify the committed README and delete the gate snapshot**
 
 `metallb/README.md` was already updated in Phase A (`cd193d1`): the manifest URL
 was bumped `v0.14.5` → `v0.16.1` and the stale `metallb-config.yaml` reference
@@ -1738,13 +2138,29 @@ Expected: all nodes `v1.29.4+k3s1`.
 
 - [ ] **Step 3: Upgrade the controller**
 
+**stderr is deliberately not suppressed, and `tail` is not applied to it.** This
+previously ended in `2>/dev/null | tail -5`, which threw away two things that
+matter: `sudo`'s auth failure (reported only on stderr, so a wrong password looked
+like an installer that printed nothing) and the k3s installer's own `[ERROR]`
+lines, which it writes to stderr. `tail -5` compounded it by hiding everything
+before the last five lines of what survived. Swapping the k3s binary on the single
+control-plane node while unable to see why it failed is the self-certifying pattern
+this plan refuses everywhere else.
+
 ```sh
 PW=$(tr -d '\n' < ~/sudo-pw.txt)
 printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller \
-  'sudo -S -p "" sh -c "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.29.15+k3s1 sh -"' 2>/dev/null | tail -5
+  'sudo -S -p "" sh -c "curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.29.15+k3s1 sh -"'
+echo "ssh/installer exit status: $?"
 ```
 
-Expected: installer output ending in `systemd: Starting k3s`.
+Expected: exit status `0`, and installer output ending in `systemd: Starting k3s`.
+
+**Read the whole output, not just the last line.** Any `[ERROR]` line, or
+`Sorry, try again` / `incorrect password` from sudo, means the install did **not**
+happen — stop and do not proceed to Step 4, which would otherwise sit in its
+readiness loop against a k3s that was never replaced and report the old version as
+though the upgrade were still in progress.
 
 - [ ] **Step 4: Wait for the API and confirm the server version**
 
@@ -1755,7 +2171,10 @@ kubectl --context local-k3s get nodes
 
 Expected: `k3s-controller` at `v1.29.15+k3s1`, workers still `v1.29.4+k3s1` (expected — agents lag until Step 5).
 
-- [ ] **Step 5: Upgrade agents one at a time, draining each**
+### Step 5: Upgrade agents one at a time, draining each
+
+Read this whole section before running anything in it. It splits into **Step 5a**
+(capture, read-only) and **Step 5b** (upgrade); the checkboxes are on those two.
 
 Workloads on `local-path` PVCs cannot reschedule elsewhere — they stay down until their node returns. This is expected, not a fault.
 
@@ -1783,15 +2202,79 @@ server vs agent from the environment alone — it has no awareness of the existi
 than reading it. Omitting them installs a second k3s in **server** mode on the
 worker and never restarts the agent, so the node is not upgraded.
 
+**That same rewrite destroys anything else in the env file.** `create_env_file()`
+writes with `tee` and no `-a`: it truncates and regenerates the file from the
+environment the installer was given. So every `K3S_*` / `CONTAINERD_*` variable
+currently in `/etc/systemd/system/k3s-agent.service.env` and *not* passed on the
+command line is silently lost — on all three workers, one after another, with the
+installer reporting success. Realistic casualties: `K3S_NODE_NAME` (the VMID→hostname
+mapping in Task 1 is non-sequential, so a node whose name comes from this file and
+not from the hostname would rejoin under the wrong identity), and `HTTP_PROXY` /
+`HTTPS_PROXY` / `NO_PROXY` / `CONTAINERD_*` settings, whose loss breaks image pulls
+at the next pull rather than at upgrade time.
+
+**And do not hardcode `K3S_URL`.** The previous form of this step passed
+`K3S_URL=https://k3s-controller:6443` as a literal. **Nobody has verified that the
+workers use that hostname** — it may be a LAN IP (192.168.10.1), and
+`k3s-controller` is also a Tailscale name, so the literal could silently move
+agent→server traffic onto the tailnet. The correct value is already on each node,
+in the file about to be overwritten. Read it from there.
+
+Step 5a captures the files and stops; 5b does the upgrade. **Run 5a on its own
+first and look at the output** — it is the only record of what these files
+contained, and after 5b it is gone.
+
+- [ ] **Step 5a: Capture each worker's env file before anything is overwritten**
+
 ```sh
+BASE=.superpowers/sdd/2026-09-13-k3s-cluster-upgrade-phases-0-4/baseline
+mkdir -p "$BASE/k3s-agent-env"
+PW=$(tr -d '\n' < ~/sudo-pw.txt)
+for h in k3s-node-1 k3s-node-2 k3s-node-3; do
+  echo "===== $h"
+  printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@$h \
+    'sudo -S -p "" cat /etc/systemd/system/k3s-agent.service.env' \
+    > "$BASE/k3s-agent-env/$h.env" || echo "ABORT: could not read env file on $h"
+  # Show the keys, never the values -- K3S_TOKEN lives in here.
+  sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/  \1/p' "$BASE/k3s-agent-env/$h.env"
+done
+wc -l "$BASE/k3s-agent-env"/*.env
+git status --porcelain -- .superpowers/   # must print nothing
+```
+
+Expected: three non-empty files, and `K3S_URL` and `K3S_TOKEN` among the keys on
+each. **If any file is empty or unreadable, stop** — without it you cannot know
+what Step 5b is about to delete, and you have no `K3S_URL` to pass.
+
+**Read the key lists.** Any key beyond `K3S_URL` and `K3S_TOKEN` must be passed
+explicitly to the installer in Step 5b or it will be lost. The loop below carries
+`K3S_URL` and `K3S_TOKEN` only; if these files contain anything else, **add it to
+the installer invocation before running 5b.** Do not assume the three workers
+match each other — check all three.
+
+- [ ] **Step 5b: Upgrade agents one at a time, draining each**
+
+```sh
+BASE=.superpowers/sdd/2026-09-13-k3s-cluster-upgrade-phases-0-4/baseline
 PW=$(tr -d '\n' < ~/sudo-pw.txt)
 TOKEN=$(printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@k3s-controller \
-  'sudo -S -p "" cat /var/lib/rancher/k3s/server/node-token' 2>/dev/null | tr -d '\n')
+  'sudo -S -p "" cat /var/lib/rancher/k3s/server/node-token' | tr -d '\n')
 echo "node-token: ${#TOKEN} chars"     # length only -- never print the token
 [ -n "$TOKEN" ] || echo "ABORT: no node-token; do not continue"
 for h in k3s-node-1 k3s-node-2 k3s-node-3; do
   [ -n "$TOKEN" ] || break
   echo "===== $h"
+
+  # K3S_URL comes from the node's own env file, not from a literal in this plan.
+  URL=$(sed -n 's/^K3S_URL=["'"'"']\?\([^"'"'"']*\)["'"'"']\?$/\1/p' "$BASE/k3s-agent-env/$h.env")
+  if [ -z "$URL" ]; then
+    echo "ABORT: no K3S_URL captured for $h in Step 5a. Do not guess it --"
+    echo "       an agent pointed at the wrong server address rejoins the wrong"
+    echo "       cluster or none at all."
+    break
+  fi
+  echo "  K3S_URL=$URL"
+
   if ! kubectl --context local-k3s drain $h --ignore-daemonsets --delete-emptydir-data --timeout=300s; then
     echo "ABORT: drain of $h failed. NOT swapping the k3s binary on an undrained node."
     echo "       Read the drain output above, decide what is holding it, then either"
@@ -1799,7 +2282,8 @@ for h in k3s-node-1 k3s-node-2 k3s-node-3; do
     break
   fi
   printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@$h \
-    "sudo -S -p '' sh -c 'curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.29.15+k3s1 K3S_URL=https://k3s-controller:6443 K3S_TOKEN=$TOKEN sh -'" 2>/dev/null | tail -3
+    "sudo -S -p '' sh -c 'curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.29.15+k3s1 K3S_URL=$URL K3S_TOKEN=$TOKEN sh -'"
+  echo "  installer exit status: $?"
   sleep 45
   kubectl --context local-k3s uncordon $h
   for i in $(seq 1 18); do
@@ -1809,10 +2293,27 @@ for h in k3s-node-1 k3s-node-2 k3s-node-3; do
     [ "$V" = "v1.29.15+k3s1" ] && [ "$R" = "True" ] && break
     sleep 10
   done
+
+  # Did the rewrite drop anything? Compare keys before and after.
+  printf '%s\n' "$PW" | ssh -o BatchMode=yes grant@$h \
+    'sudo -S -p "" cat /etc/systemd/system/k3s-agent.service.env' \
+    | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | sort > /tmp/after-$h.keys
+  sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' "$BASE/k3s-agent-env/$h.env" | sort > /tmp/before-$h.keys
+  if diff /tmp/before-$h.keys /tmp/after-$h.keys; then
+    echo "  env keys unchanged on $h"
+  else
+    echo "  WARNING: env keys changed on $h (lines with '<' were LOST). Restore them"
+    echo "           from $BASE/k3s-agent-env/$h.env before continuing to the next node."
+  fi
 done
 ```
 
-Expected: `node-token: <N> chars` with N greater than 0 before anything is drained — if it is `0`, the token read failed and the loop must not run. Then each node reaches `v1.29.15+k3s1` and `ready=True` before the loop moves on. **If a node does not, stop — do not drain the next one.** Each installer run should report `systemd: Starting k3s-agent`; `systemd: Starting k3s` would mean a server was installed on a worker — stop and roll back.
+**stderr is not suppressed here either**, for the same reason as Step 3: the
+installer writes `[ERROR]` to stderr and `sudo -S` reports auth failures only
+there, and `2>/dev/null | tail -3` previously discarded both while the loop went on
+to drain the next node.
+
+Expected: `node-token: <N> chars` with N greater than 0 before anything is drained — if it is `0`, the token read failed and the loop must not run. A plausible `K3S_URL` echoed for each node. Then each node reaches `v1.29.15+k3s1` and `ready=True`, and `env keys unchanged`, before the loop moves on. **If a node does not, stop — do not drain the next one.** Each installer run should report `systemd: Starting k3s-agent`; `systemd: Starting k3s` would mean a server was installed on a worker — stop and roll back.
 
 - [ ] **Step 6: Full verification against the Task 0 baseline — acceptance test**
 
