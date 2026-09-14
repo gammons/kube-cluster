@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the homelab cluster safe to upgrade (tested rollback + fix pre-existing breakage), then bring the Tailscale operator, MetalLB, and cert-manager current and validate the k3s upgrade mechanism with a patch-level bump.
+**Goal:** Make the homelab cluster safe to upgrade (tested rollback + fix pre-existing breakage), then bring the Tailscale operator and MetalLB current and validate the k3s upgrade mechanism with a patch-level bump. **cert-manager is explicitly out of scope** — see "Task numbering: 10 and 11 do not exist" below.
 
 **Architecture:** Every change that cannot be undone in place is gated behind a *snapshot set* — a Proxmox VM snapshot of all 4 VMs plus a ZFS snapshot of `main-pool/k3s-nfs`, created and rolled back as one unit, which together capture the entire cluster state. Work proceeds lowest-risk first so the rollback mechanism is proven before anything important depends on it. Kubernetes minor version hops (1.30 → 1.36) are explicitly **out of scope** and deferred to a later plan.
 
@@ -10,12 +10,27 @@
 
 | Task | Gate | Why |
 |---|---|---|
-| 3, 6, 8, 9, 10, 12 | **yes** — `create` at the start, `delete` after verification passes | irreversible or cluster-wide: LV extension, k3s config + restart, operator/CRD/manifest upgrades, k3s binary swap |
+| 3, 6, 8, 9, 12 | **yes** — `create` at the start, `delete` after verification passes | irreversible or cluster-wide: LV extension, k3s config + restart, operator/manifest upgrades, k3s binary swap |
 | 0, 7 | no | read-only; Task 7's only write is a commit |
 | 1 | **not possible** | Task 1 installs the `qemu-guest-agent` that `snapshot-cluster.sh create` *refuses to run without*. Its rollback trigger says so and routes to forward diagnosis. |
 | 2 | n/a | Task 2 **is** the rollback test; its own snapshot is the subject, and Step 6 deletes it |
 | 4, 5 | no — `helm rollback` instead | both change only Helm release state, which is reversible from Helm's own history. Each records the current revision in Step 1 so the rollback target is a fact rather than a guess. |
-| 11 | **deferred** | Task 11 is not sequenceable in this plan — see its slot below |
+| 10, 11 | **removed from scope** | both were cert-manager upgrades. Deleted, not deferred-in-place — see "Task numbering: 10 and 11 do not exist" below. |
+
+### Task numbering: 10 and 11 do not exist
+
+**The gap between Task 9 and Task 12 is deliberate.** Tasks 10 and 11 were the
+cert-manager upgrades (→ v1.17.4 and → v1.21.2). Both have been removed from this
+plan entirely. Task 12 keeps its number: roughly 30 cross-references in this file
+and in the spec point at it by number, another session is editing this repo, and a
+renumber would churn all of them for no benefit. **If you are reading this and
+wondering whether a task was lost in an edit — no. Go from Task 9 straight to
+Task 12.**
+
+The reasons for removal, and what a future attempt must do first, are recorded in
+`docs/superpowers/specs/2026-09-12-k3s-cluster-upgrade-design.md` under
+"cert-manager: removed from scope". Do not reconstruct the upgrade from this
+plan's history; the reasoning in those deleted tasks was wrong.
 
 **Exactly one gate may be live at a time.** Every gate is created and deleted inside
 a single task, so **no task may assume a gate taken by an earlier one is still
@@ -30,13 +45,14 @@ succeed there by *destroying* the newer snapshot, so the "one unit" set would co
 apart in exactly this case. `snapshot-cluster.sh rollback` now checks recency on all
 five targets before it stops anything and refuses if the label is not newest.
 
-An earlier revision of this plan claimed the opposite: that Task 10 creating
-`pre-certmanager-117` and Task 11 deleting it left "two gates live… That is
-intentional", with `pre-certmanager-117` still "available as a route back". **It was
-not available** — with `pre-certmanager-121` newer, a rollback to it would have
-stopped all 4 VMs and then died on the first `qm rollback`, leaving the cluster
-powered off with nothing reverted. With Task 11 deferred the situation no longer
-arises at all, and Task 10 now deletes its own gate at its own last step.
+An earlier revision of this plan claimed the opposite: that the two cert-manager
+tasks (then 10 and 11) could leave "two gates live… That is intentional", with the
+older one still "available as a route back". **It was not available** — with a newer
+gate present, a rollback to the older one would have stopped all 4 VMs and then died
+on the first `qm rollback`, leaving the cluster powered off with nothing reverted.
+Both tasks have since been removed from scope, so the situation no longer arises
+here — but the rule survives them, because it is a property of Proxmox, not of those
+tasks. Every remaining gated task takes and releases its gate within itself.
 
 **Tech Stack:** Proxmox VE 8.4.11 + ZFS, k3s v1.29.4 (SQLite datastore, single server), Helm 3, Ubuntu 24.04 guests, kube-prometheus-stack, Velero 1.18.1.
 
@@ -67,11 +83,15 @@ arises at all, and Task 10 now deletes its own gate at its own last step.
 | k3s | v1.29.4+k3s1 | **v1.29.15+k3s1** (patch only) |
 | Tailscale operator | 1.76.6 | 1.102.3 |
 | MetalLB | v0.14.5 | v0.16.1 |
-| cert-manager | v1.14.5 | **v1.17.4** — the ceiling, not a waypoint (see Task 10) |
+| cert-manager | v1.14.5 | **no change — out of scope** |
 
-cert-manager 1.21 requires Kubernetes ≥1.33 and **cannot be installed on this
-cluster**, which runs 1.29. 1.17 is the newest release that supports 1.29, and it
-covers every hop through 1.33. Task 11 (→ v1.21.2) is therefore deferred to Phase 5+.
+**cert-manager is not upgraded by this plan.** It stays on the installed v1.14.5.
+This is not a deferral of a blocked step: cert-manager 1.14 supports Kubernetes
+**1.24 → 1.31**, so it blocks nothing in Phases 0-4 and would survive the Task 12
+patch bump and the first two minor hops unaided. The reasons for removing it, and
+the preconditions for any future attempt, are in the spec under "cert-manager:
+removed from scope". Do not add a cert-manager step back into this plan without
+reading that section first.
 
 ---
 
@@ -97,8 +117,8 @@ covers every hop through 1.33. Task 11 (→ v1.21.2) is therefore deferred to Ph
 | `tailscale/values.yml` | Tailscale operator values, secret-free |
 | `tailscale/README.md` | Install/upgrade, why the OAuth secret is not in git, and the `helm.sh/resource-policy=keep` requirement |
 | `metallb/README.md` | Manifest URL (`v0.16.1`) and config filename |
-| `cert-manager/install-crd.sh` | Pinned to **v1.17.4** (the newest release Kubernetes 1.29 supports), `crds.enabled`/`crds.keep` instead of `installCRDs`; `set -euo pipefail` so a failed CRD apply cannot fall through to the chart install |
-| `cert-manager/README.md` | What `install-crd.sh` installs, why the pin is bounded by the cluster's Kubernetes version, webhook admission probe, known-failing cert |
+| `cert-manager/install-crd.sh` | **Not used by this plan.** Pinned to **v1.14.5** to match what is deployed, since the upgrade is out of scope. Its header states the deferral and the CRD-ownership check any future re-pin must do first. |
+| `cert-manager/README.md` | **Not used by this plan**, except that Task 7 Step 4 appends a "Known issues" section to it. Records the deferral and the same warning. |
 
 ---
 
@@ -125,10 +145,10 @@ Expected: `0` for all four hosts. If any is not `0`, **stop** — every later ta
 
 - [ ] **Step 2: Check the two host-side conditions every gate depends on**
 
-Both of these are properties of the Proxmox host, not of the cluster, and both
-silently decide whether the gates in Tasks 3, 6, 8, 9, 10, 11 and 12 will work at
-all. Check them now, while nothing has changed, rather than discovering them at
-the first `create`.
+All three of these are properties of the Proxmox host, not of the cluster, and each
+silently decides whether the gates in Tasks 3, 6, 8, 9 and 12 will work at all.
+Check them now, while nothing has changed, rather than discovering them at the
+first `create`.
 
 **2a — pool health.**
 
@@ -1174,7 +1194,16 @@ then `OK: snapshot set 'pre-servicelb' deleted`.
 
 ## Task 7: Diagnose the 171-day-failed certificate
 
-`truelist-staging/truelist-stag-io-cert` has been `READY=False` for 171 days with a live `cm-acme-http-solver-sqcfr` pod. Diagnose **before** upgrading cert-manager so a pre-existing failure is not mistaken for upgrade fallout.
+`truelist-staging/truelist-stag-io-cert` has been `READY=False` for 171 days with a live `cm-acme-http-solver-sqcfr` pod.
+
+**This task survived the removal of the cert-manager upgrade, and is still worth
+running.** Its original justification was "diagnose before upgrading cert-manager so
+a pre-existing failure is not mistaken for upgrade fallout"; with no cert-manager
+upgrade in scope, that reason is gone. Two independent ones remain: the failure is
+real and undocumented, and **Task 12 restarts the API server and every node**, after
+which an undocumented 171-day-old `READY=False` certificate is indistinguishable from
+k3s-upgrade fallout in Task 12's own acceptance test (Step 6 reads
+`get certificates -A`). Recording it first is what keeps that check readable.
 
 **Files:** Modify `cert-manager/README.md` (Step 4). This and Task 6 Step 9
 (top-level `README.md`) are the only two repo writes in the plan; every other task
@@ -1222,8 +1251,9 @@ Ingress for `truelist-api-stag.grant.dev` are still present.
 - Reason: `[reason from Step 2]`
 - Resolves publicly: `[yes/no from Step 3]`
 
-Recorded before the cert-manager upgrade so this pre-existing failure is not
-misread as upgrade fallout.
+Recorded before the k3s upgrade in Task 12 so this pre-existing failure is not
+misread as upgrade fallout. cert-manager itself is **not** being upgraded — it
+stays on v1.14.5; see the spec's "cert-manager: removed from scope".
 
 **Not yet fixed.** If the hostname is not meant to be reachable from the
 internet, HTTP-01 cannot work and the fix is either a DNS-01 solver or deleting
@@ -1239,8 +1269,9 @@ git add cert-manager/README.md
 git commit -m "record long-failing truelist staging certificate
 
 truelist-stag-io-cert has been READY=False for 171 days with a stuck ACME
-solver. Documented before upgrading cert-manager so the pre-existing failure is
-not misread as upgrade fallout." -- cert-manager/README.md
+solver. Task 12 restarts the API server and every node, and its acceptance test
+reads 'get certificates -A'; recording this first is what keeps that check
+readable. cert-manager itself is not being upgraded." -- cert-manager/README.md
 ```
 
 **Rollback trigger:** none — read-only investigation.
@@ -1567,249 +1598,41 @@ If the IPs still do not return, `./proxmox/snapshot-cluster.sh rollback pre-meta
 
 ---
 
-## Task 10: Upgrade cert-manager v1.14.5 → v1.17.4
+## Tasks 10 and 11: cert-manager — REMOVED FROM SCOPE
 
-**v1.17.4 is the ceiling for this cluster, not a waypoint.** cert-manager 1.17
-supports Kubernetes 1.29 → 1.33; 1.21 requires ≥1.33. This cluster is on 1.29, so
-1.21 cannot be installed here at all and **Task 11 is deferred to Phase 5+.** This
-task is the whole of the cert-manager work in this plan.
+**There is no Task 10 and no Task 11.** Both were cert-manager upgrades
+(v1.14.5 → v1.17.4, then v1.17.4 → v1.21.2). They have been deleted from this
+plan. cert-manager stays on the installed **v1.14.5** for the whole of Phases 0-4.
 
-The reason to move is that **v1.14.5 has been EOL since Oct 2024** — not that it is
-blocking anything. 1.14 supports Kubernetes up to 1.31, so it would survive the
-patch bump in Task 12 and the first two minor hops unaided. Do not treat this task
-as a prerequisite for Task 12.
+**This is not a blocked step waiting for a precondition.** cert-manager 1.14
+supports Kubernetes **1.24 → 1.31**, so it gates nothing here: Task 12's patch bump
+inside 1.29 does not touch it, and it would survive the first two minor hops of a
+future Phase 5+ unaided. Nothing in Tasks 0-9 or Task 12 depends on it moving.
 
-v1.17.4 is the newest 1.17 patch. cert-manager's webhook is cluster-wide — if it
-breaks, **all** Certificate/Issuer admission fails.
+**Why it was removed rather than corrected.** The cert-manager reasoning in this
+project was confidently wrong three separate times, and each time the wrong version
+was written down as settled. Rather than attempt a fourth correction inside a plan
+that executes against a live production cluster, the work has been taken out of
+scope and the *verified* facts — including which of the previous claims were false
+and why — recorded in the spec instead.
 
-**Files:** none. `cert-manager/install-crd.sh` is pinned to **v1.17.4** (`afff44b`),
-which is what this task installs, so running it would land in the right place. Use
-the explicit commands in Steps 3, 3b and 4 anyway: the script also does
-`--create-namespace` and `helm upgrade --install`, which would mask a surprise about
-the existing release rather than surface it, and Step 3b must run *between* the CRD
-apply and the chart upgrade. The script exists for a rebuild, not for a live upgrade
-with a gate around it.
+**Before anyone puts cert-manager back into a plan, read
+`docs/superpowers/specs/2026-09-12-k3s-cluster-upgrade-design.md`, section
+"cert-manager: removed from scope".** In particular, the live CRDs' protection is
+*not* what the deleted tasks claimed, and getting that wrong cascades to every
+Certificate, CertificateRequest, Issuer, ClusterIssuer, Order and Challenge in the
+cluster. Derive the next attempt from the chart source, not from these tasks and
+not from release notes.
 
-- [ ] **Step 1: Record the pre-change state**
+**Task numbering is unchanged on purpose.** Task 12 is still Task 12; the gap here
+is deliberate and is explained at the top of this file. Skip from Task 9 to Task 12.
 
-```sh
-kubectl --context local-k3s get deploy -n cert-manager -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.containers[0].image}{"\n"}{end}'
-kubectl --context local-k3s get clusterissuers,certificates -A
-helm --kube-context local-k3s history cert-manager -n cert-manager
-```
+**No gate is involved.** The `pre-certmanager-117` and `pre-certmanager-121`
+snapshot labels belonged to these tasks and are never created. If either label
+exists on the Proxmox host, something ran a superseded version of this plan —
+investigate before deleting it, because deleting a snapshot set discards the route
+back past that point.
 
-Expected: images at `v1.14.5`; `letsencrypt-prod` `True`; 5 Certificates, 4 `True` and `truelist-stag-io-cert` `False` (known, Task 7).
-
-**Record the current `deployed` revision** from `helm history`. This task's
-rollback trigger needs it and nothing else captures it — do not assume `1`.
-
-- [ ] **Step 2: Gate — snapshot**
-
-```sh
-./proxmox/snapshot-cluster.sh create pre-certmanager-117
-```
-
-- [ ] **Step 3: Apply CRDs first**
-
-cert-manager requires CRDs to be updated **before** the chart.
-
-```sh
-kubectl --context local-k3s apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.4/cert-manager.crds.yaml
-```
-
-Expected: 6 lines, each `customresourcedefinition.apiextensions.k8s.io/... configured`
-(or `unchanged`), and **no errors**. That output is the only direct evidence the
-apply landed — `kubectl get crd | grep cert-manager` afterwards would only prove
-the CRDs exist, which they already did before this step ran.
-
-- [ ] **Step 3b: Verify the CRDs are present *and* annotated — gate before Step 4**
-
-This is the check that makes Step 4 safe, and it was missing. Step 4 runs the
-chart with `crds.enabled=false`, which means the chart renders **no** CRDs at all
-and takes no responsibility for them: from that point on the only thing standing
-between the cluster and a CRD deletion is the `helm.sh/resource-policy: keep`
-annotation that the released `cert-manager.crds.yaml` carries on all 6. Confirm all
-6 exist and all 6 carry it:
-
-```sh
-kubectl --context local-k3s get crd \
-  certificates.cert-manager.io certificaterequests.cert-manager.io \
-  issuers.cert-manager.io clusterissuers.cert-manager.io \
-  orders.acme.cert-manager.io challenges.acme.cert-manager.io \
-  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.helm\.sh/resource-policy}{"\n"}{end}'
-```
-
-Expected: exactly 6 rows, each ending in `keep`:
-
-```
-certificates.cert-manager.io	keep
-certificaterequests.cert-manager.io	keep
-issuers.cert-manager.io	keep
-clusterissuers.cert-manager.io	keep
-orders.acme.cert-manager.io	keep
-challenges.acme.cert-manager.io	keep
-```
-
-**Any row with a blank second column, or fewer than 6 rows, means stop — do not
-run Step 4.** A blank means either the Step 3 apply did not land on that CRD, or
-that CRD predates it and is unprotected. A `NotFound` means a CRD is missing
-outright, and upgrading the chart on top of that produces a live cluster-wide
-admission webhook with nothing behind it: every Certificate and Issuer admission
-in the cluster fails, including ones that have nothing to do with cert-manager's
-own reconciliation. Re-run Step 3 and read its output rather than working around
-this.
-
-- [ ] **Step 4: Upgrade the chart**
-
-`installCRDs` was renamed to `crds.enabled` in cert-manager 1.15; the old key still works but is deprecated. Since CRDs were applied in Step 3 and verified in Step 3b, disable chart-managed CRDs.
-
-`--set crds.keep=true` is passed for symmetry with `cert-manager/install-crd.sh`
-and is **inert** here: `crds.keep` only adds the `keep` annotation to CRDs the
-chart itself renders, and `crds.enabled=false` means it renders none. It is not
-what protects the CRDs — Step 3b is.
-
-```sh
-helm repo add jetstack https://charts.jetstack.io 2>/dev/null; helm repo update jetstack >/dev/null
-helm upgrade cert-manager jetstack/cert-manager --kube-context local-k3s \
-  -n cert-manager --version v1.17.4 \
-  --set crds.enabled=false --set crds.keep=true \
-  --wait --timeout 10m
-```
-
-Expected: `STATUS: deployed`.
-
-- [ ] **Step 5: Verify the webhook is serving — the critical check**
-
-```sh
-kubectl --context local-k3s get pods -n cert-manager
-kubectl --context local-k3s rollout status deploy/cert-manager-webhook -n cert-manager --timeout=5m
-```
-
-Then prove admission works by creating and deleting a throwaway Issuer. A broken webhook makes this fail:
-
-```sh
-kubectl --context local-k3s apply -f - <<'EOF'
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: webhook-probe
-  namespace: default
-spec:
-  selfSigned: {}
-EOF
-kubectl --context local-k3s get issuer webhook-probe -n default
-kubectl --context local-k3s delete issuer webhook-probe -n default
-```
-
-Expected: `issuer.cert-manager.io/webhook-probe created`, then deleted. Failure here means the webhook is broken — **roll back immediately**.
-
-- [ ] **Step 6: Verify existing certificates still reconcile**
-
-```sh
-sleep 60
-kubectl --context local-k3s get certificates -A
-kubectl --context local-k3s get clusterissuer letsencrypt-prod
-```
-
-Expected: the same 4 `True` certificates as Step 1, `letsencrypt-prod` still `True`. No certificate that was `True` may become `False`.
-
-- [ ] **Step 7: Verify the committed cert-manager files**
-
-`cert-manager/install-crd.sh` and `cert-manager/README.md` are already committed —
-there is nothing to stage. Check their histories **separately**: the two diverge,
-and `git log -1` over a combined pathspec reports only whichever was touched most
-recently, hiding the other.
-
-```sh
-git status --porcelain -- cert-manager/install-crd.sh cert-manager/README.md
-git log --oneline -1 -- cert-manager/install-crd.sh
-git log --oneline -1 -- cert-manager/README.md
-grep -n "v1\.17\.4\|crds\.enabled\|crds\.keep" cert-manager/install-crd.sh
-grep -n "v1\.17\.4\|v1\.21\|install-crd.sh" cert-manager/README.md
-```
-
-Expected: no `git status` output.
-
-For `install-crd.sh`, the most recent commit is `afff44b` (re-pin to v1.17.4) or a
-later reviewed fix; expect a shebang, `set -euo pipefail`, `VERSION=v1.17.4`,
-`crds.enabled=false` and `crds.keep=true`. The version it pins must match the one
-Step 3 and Step 4 just used — if it does not, one of the two is wrong and the
-cluster and the repo have already diverged.
-
-For `README.md`, expect **the Task 7 Step 5 commit** (`record long-failing truelist
-staging certificate`). Task 7 runs before this task and *always* appends a "Known
-issues" section to this file and commits it, so that is the commit that will be on
-top — not `afff44b`. Seeing `afff44b` instead means Task 7 Step 5 did not commit;
-note it as a gap to follow up, but **do not halt on either answer.** Step 4 has
-already been applied by this point, and stopping on a bookkeeping mismatch leaves
-it half-verified.
-
-The README states what `install-crd.sh` installs and why the pin is bounded by the
-cluster's Kubernetes version. It deliberately does **not** assert what is live —
-prose that claims a running version goes stale silently. If you want the cluster's
-actual version, read it:
-
-```sh
-kubectl --context local-k3s get deploy cert-manager -n cert-manager \
-  -o jsonpath='{.spec.template.spec.containers[0].image}'; echo
-```
-
-- [ ] **Step 8: Delete the gate snapshot**
-
-Only after Steps 5, 6 and 7 have passed. Task 11 used to release this gate; with
-Task 11 deferred, this task releases its own — as every other gated task in this
-plan does, and as the one-gate-at-a-time rule requires.
-
-```sh
-./proxmox/snapshot-cluster.sh delete pre-certmanager-117
-```
-
-Expected: `OK: snapshot set 'pre-certmanager-117' deleted`.
-
-**Rollback trigger:** the webhook probe fails, any previously-`True` certificate goes `False`, or `letsencrypt-prod` stops being `Ready`.
-
-**Recovery:** `helm rollback cert-manager <prev-rev> --kube-context local-k3s -n cert-manager`, where `<prev-rev>` is the `deployed` revision recorded in Step 1.
-
-The CRDs — and therefore every Certificate, Issuer and Order object in the cluster
-— survive that rollback because **the chart does not manage them**: with
-`crds.enabled=false` it renders no CRDs, so neither the old nor the new manifest
-contains any for Helm to prune. `crds.keep=true` is *not* the reason and cannot be:
-it only annotates CRDs the chart renders, and there are none, so it is inert. The
-`helm.sh/resource-policy: keep` annotation that does exist on the 6 CRDs comes from
-the released `cert-manager.crds.yaml` applied in Step 3 and verified in Step 3b, and
-it guards against a *future* chart install that does render them — it is a second
-line, not the first.
-
-If the webhook is still broken after the Helm rollback, `./proxmox/snapshot-cluster.sh
-rollback pre-certmanager-117` — **available only until Step 8 deletes it.** Once Step
-8 has run there is no snapshot route back from this task, which is why Step 8 is last
-and gated on Steps 5, 6 and 7 all passing.
-
----
-
-## Task 11: Upgrade cert-manager v1.17.4 → v1.21.2 — **DEFERRED, DO NOT RUN**
-
-**DEFERRED — moved to Phase 5+. See "Deferred: Task 11" at the end of this file,
-and "Phase 5+" in the spec.**
-
-**Why it cannot run here.** cert-manager 1.21 supports Kubernetes **1.33 → 1.36**
-(cert-manager.io/docs/releases, verified 2026-09-13). This cluster is on **1.29** —
-four minors below 1.21's floor. Installing it would put a cluster-wide admission
-webhook in front of every Certificate and Issuer on an API server it does not
-support. Task 10's v1.17.4 is the ceiling for Kubernetes 1.29.
-
-The upgrade is still wanted. 1.17 is upstream-EOL (Oct 2025) and its commercial LTS
-ends **Feb 2027**, so this has a deadline — it is deferred, not dropped. It becomes
-possible when the Kubernetes hops reach 1.33, which is the single version both 1.17
-and 1.21 support and therefore the only window to move between them.
-
-**The slot is kept so Task 12 stays Task 12** and every cross-reference elsewhere in
-this plan and in the spec still resolves. Nothing in Phases 0-4 depends on this task:
-Task 10 now releases its own `pre-certmanager-117` gate at its own last step, and
-Task 12 does not need cert-manager moved at all (1.14 supports Kubernetes up to
-1.31, let alone a 1.29 patch bump).
-
-Skip straight from Task 10 to Task 12.
 ---
 
 ## Task 12: Upgrade k3s v1.29.4 → v1.29.15+k3s1 (patch only)
@@ -1990,180 +1813,20 @@ At the end of Task 12:
 
 - Rollback is proven, not assumed
 - Tailscale operator and MetalLB are current
-- cert-manager is at **v1.17.4** — off EOL 1.14, and at the newest release Kubernetes
-  1.29 supports. It is **not** current: 1.17 itself reached upstream EOL in Oct 2025
-  and is covered only by a commercial LTS ending **Feb 2027**. 1.21 needs Kubernetes
-  ≥1.33. See "Deferred: Task 11" below.
+- cert-manager is **untouched, still on v1.14.5, and still EOL** (upstream EOL Oct
+  2024). That is a known, accepted gap, not an outcome of this plan — the upgrade was
+  removed from scope, not attempted and abandoned. It is **not** blocking anything
+  here: 1.14 supports Kubernetes 1.24 → 1.31. See the spec, "cert-manager: removed
+  from scope".
 - k3s is patch-current on 1.29 and the upgrade mechanism is validated
 - klipper/MetalLB conflict resolved, clearing 5 of the 6 firing warning groups
 - Velero covers ~25 namespaces instead of 6 — **namespaced objects only.** `includeClusterResources` is left unset, and Velero's auto-rule only defaults it to true when the backup is unrestricted; a non-empty `excludedNamespaces` keeps it false. So cluster-scoped objects — CRDs, ClusterRoles/Bindings, StorageClasses, ClusterIssuers, PVs — are still **not** backed up, and the snapshot set remains the only thing covering them. Setting `includeClusterResources: true` is a separate decision with its own restore implications.
 - Two secrets (Slack webhook, Tailscale OAuth) are out of Helm values
 - k3s configuration is declarative and survives reinstalls
 
-**Explicitly NOT done:** Kubernetes minor hops 1.30 → 1.36, and the cert-manager
-1.17 → 1.21 upgrade that can only happen while the cluster sits on 1.33. Before
-planning those, re-sample `apiserver_requested_deprecated_apis` after ≥7 days of API
-server uptime — the earlier reading was taken after only 2.5h and proves nothing. The
-open question of in-place hops versus a rebuild at 1.36 is recorded in the spec.
-
----
-
-## Deferred: Task 11 — cert-manager v1.17.4 → v1.21.2
-
-**Do not run this from Phases 0-4.** It is kept here, written and reviewed, because
-it is still wanted — just not sequenceable yet. Its slot above is a marker so Task 12
-keeps its number and cross-references still resolve.
-
-**Precondition, and it is absolute:** the cluster must be on **Kubernetes 1.33**.
-
-| cert-manager | Supported Kubernetes |
-|---|---|
-| 1.17 | 1.29 → **1.33** |
-| 1.21 | **1.33** → 1.36 |
-
-1.33 is the only version both support, so this upgrade happens after the 1.32 → 1.33
-hop lands and before the 1.33 → 1.34 hop starts. Below 1.33 the chart is installing
-onto an unsupported API server; above it, 1.17 is the one out of range. This is the
-one place cert-manager really is a hard gate.
-
-**Deadline:** the 1.17 commercial LTS (Palo Alto Networks) ends **Feb 2027**.
-
-**Take its own gate, and hold no other.** `pre-certmanager-117` is released by Task
-10 Step 8 and will be long gone. Proxmox refuses to roll a zvol back to anything but
-its newest snapshot, so two live gates are not two routes back — see "Exactly one
-gate may be live at a time" at the top of this plan.
-
-**Files:** none. `cert-manager/install-crd.sh` is pinned to v1.17.4 and **must be
-re-pinned to v1.21.2 as part of doing this**, in its own reviewed commit, alongside
-the `cert-manager/README.md` support-matrix table. Do not leave the repo installing
-1.17 after the cluster has moved to 1.21.
-
-- [ ] **Step 1: Confirm the preconditions**
-
-```sh
-kubectl --context local-k3s get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\n"}{end}'
-kubectl --context local-k3s get deploy -n cert-manager -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.template.spec.containers[0].image}{"\n"}{end}'
-kubectl --context local-k3s get certificates -A
-helm --kube-context local-k3s history cert-manager -n cert-manager
-```
-
-Expected: **all 4 nodes on v1.33.x**, cert-manager images at `v1.17.4`, the same 4
-`True` certificates. **If any node is not on 1.33, stop** — this is the precondition,
-not a warning. Record the current `deployed` revision; the rollback trigger needs it.
-
-- [ ] **Step 2: Gate — snapshot**
-
-```sh
-./proxmox/snapshot-cluster.sh create pre-certmanager-121
-```
-
-Expected: `OK: snapshot set 'pre-certmanager-121' created`. If it aborts saying a
-label is already in use, or a later rollback aborts naming a newer label, an earlier
-gate was not released — find out which task left it and why before deleting anything.
-
-- [ ] **Step 3: Apply CRDs**
-
-```sh
-kubectl --context local-k3s apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.21.2/cert-manager.crds.yaml
-```
-
-Expected: 6 `configured` lines, no errors.
-
-- [ ] **Step 3b: Verify the CRDs are present *and* annotated — gate before the upgrade**
-
-Same gate as Task 10 Step 3b, and for the same reason: the chart below runs with
-`crds.enabled=false`, so it renders no CRDs and `crds.keep=true` is inert. The only
-protection on the 6 CRDs is the annotation the applied file carries. Do not chain
-this apply and the `helm upgrade` in one block — the point is to look at the result
-in between.
-
-```sh
-kubectl --context local-k3s get crd \
-  certificates.cert-manager.io certificaterequests.cert-manager.io \
-  issuers.cert-manager.io clusterissuers.cert-manager.io \
-  orders.acme.cert-manager.io challenges.acme.cert-manager.io \
-  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.helm\.sh/resource-policy}{"\n"}{end}'
-```
-
-Expected: exactly 6 rows, each ending in `keep`. **Any blank second column or
-fewer than 6 rows means stop — do not run the upgrade below.**
-
-- [ ] **Step 3c: Upgrade the chart**
-
-```sh
-helm repo add jetstack https://charts.jetstack.io 2>/dev/null; helm repo update jetstack >/dev/null
-helm upgrade cert-manager jetstack/cert-manager --kube-context local-k3s \
-  -n cert-manager --version v1.21.2 \
-  --set crds.enabled=false --set crds.keep=true \
-  --wait --timeout 10m
-```
-
-Expected: `STATUS: deployed`, `REVISION` one higher than the revision recorded in
-Step 1.
-
-- [ ] **Step 4: Webhook admission probe**
-
-```sh
-kubectl --context local-k3s rollout status deploy/cert-manager-webhook -n cert-manager --timeout=5m
-kubectl --context local-k3s apply -f - <<'EOF'
-apiVersion: cert-manager.io/v1
-kind: Issuer
-metadata:
-  name: webhook-probe
-  namespace: default
-spec:
-  selfSigned: {}
-EOF
-kubectl --context local-k3s get issuer webhook-probe -n default
-kubectl --context local-k3s delete issuer webhook-probe -n default
-```
-
-Expected: created then deleted. Failure means the webhook is broken — **roll back
-immediately**; a broken cert-manager webhook blocks all Certificate/Issuer admission
-cluster-wide.
-
-- [ ] **Step 5: Verify certificates**
-
-```sh
-sleep 60
-kubectl --context local-k3s get certificates -A
-kubectl --context local-k3s get clusterissuer letsencrypt-prod
-```
-
-Expected: the same `True` certificates as Step 1, `letsencrypt-prod` still `True`.
-
-- [ ] **Step 6: Re-pin the repo to v1.21.2, in its own commit**
-
-The cluster is now on 1.21 and `cert-manager/install-crd.sh` still installs 1.17.4.
-Update it and the `cert-manager/README.md` support-matrix table, then commit with an
-explicit pathspec:
-
-```sh
-git diff -- cert-manager/install-crd.sh cert-manager/README.md
-git add cert-manager/install-crd.sh cert-manager/README.md
-git commit -m "re-pin cert-manager to v1.21.2 now the cluster is on Kubernetes 1.33" \
-  -- cert-manager/install-crd.sh cert-manager/README.md
-```
-
-Expected: the script's `VERSION` is `v1.21.2`, the README's table says 1.21 is what
-`install-crd.sh` installs, and the "never raise this pin ahead of the cluster's
-Kubernetes version" rule is still stated — it will matter again at 1.36.
-
-- [ ] **Step 7: Delete the gate snapshot**
-
-```sh
-git status --porcelain -- cert-manager/
-./proxmox/snapshot-cluster.sh delete pre-certmanager-121
-```
-
-Expected: no `git status` output (Step 6's commit has landed), then
-`OK: snapshot set 'pre-certmanager-121' deleted`.
-
-**Rollback trigger:** the webhook probe fails, any previously-`True` certificate goes
-`False`, or `letsencrypt-prod` stops being `Ready`. Recovery: `helm rollback
-cert-manager <prev-rev> --kube-context local-k3s -n cert-manager`, where `<prev-rev>`
-is the `deployed` revision recorded in Step 1 (`helm --kube-context local-k3s history
-cert-manager -n cert-manager` to read it); else `./proxmox/snapshot-cluster.sh
-rollback pre-certmanager-121`. As in Task 10, the CRDs survive the Helm rollback
-because the chart never managed them, **not** because of `crds.keep=true` — that flag
-is inert with `crds.enabled=false`.
+**Explicitly NOT done:** Kubernetes minor hops 1.30 → 1.36, and **any cert-manager
+upgrade at all** — cert-manager is out of scope for this plan and remains on the EOL
+v1.14.5. Before planning the hops, re-sample `apiserver_requested_deprecated_apis`
+after ≥7 days of API server uptime — the earlier reading was taken after only 2.5h and
+proves nothing. The open question of in-place hops versus a rebuild at 1.36 is
+recorded in the spec, as is what a future cert-manager attempt must verify first.
