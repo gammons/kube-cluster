@@ -137,11 +137,31 @@ to the command name does not see it.
    kubectl --context local-k3s wait --for=condition=complete job/pgdump-manual-1 -n immich --timeout=30s \
      && echo "JOB COMPLETE" \
      || { echo "JOB FAILED"; kubectl --context local-k3s get job pgdump-manual-1 -n immich -o jsonpath='{"succeeded="}{.status.succeeded}{" failed="}{.status.failed}{"\n"}'; }
-   kubectl --context local-k3s delete job pgdump-manual-1 -n immich
    ```
 
-   Expected: `JOB COMPLETE`, then a `dump size:` line well above 10240 bytes,
-   then `done`.
+   Expected, in this order: a `dump size:` line well above 10240 bytes, then
+   `done`, then `JOB COMPLETE` — the log streams first and the verdict is printed
+   after it.
+
+   **A `JOB FAILED` here can be false.** `logs -f` follows `create job` by one
+   line, so it may error out at once with `is waiting to start: ContainerCreating`;
+   the classifying `wait` then runs against a Job that has barely started, times
+   out after 30s and prints `JOB FAILED` for a perfectly healthy run. The `failed=`
+   field the diagnostic branch prints is the tell — **empty means still running**,
+   `failed=1` means a genuine failure. The remedy is to re-run the `logs -f` line,
+   which attaches once the pod is up. Note also that this Job comes from
+   `pgdump-cronjob.yml`, which sets `backoffLimit: 2`, so it gets up to three pod
+   attempts; `logs -f` follows only one of them, so a first-attempt failure can
+   likewise expire the 30s `wait` mid-backoff on a Job that still goes on to
+   succeed. Both errors are in the safe direction — a false alarm, never a false
+   all-clear — so re-read the log rather than acting on the verdict.
+
+   Only once you have read that output, delete the Job — the `dump size:` line
+   lives in its log and is unrecoverable afterwards:
+
+   ```bash
+   kubectl --context local-k3s delete job pgdump-manual-1 -n immich
+   ```
 
 6. Prometheus alerts. `alerts.yml` declares `namespace: monitoring` in the
    manifest itself — the `PrometheusRule` must live beside Prometheus, not in
@@ -267,10 +287,12 @@ place**, ever. Growing the database volume is a destroy-and-rebuild: take a fres
 dump, scale the StatefulSet to 0 so the pod releases the claim, edit the size in
 `pvc.yml`, delete the PVC (the data is gone at this point — see `reclaimPolicy`
 below), re-apply `pvc.yml`, scale the StatefulSet back to 1 so `WaitForFirstConsumer`
-binds a new empty volume, and only then load the dump back in. **Only that last step
-is documented below** — ["Restoring the database"](#restoring-the-database--unrehearsed)
-covers dump → `psql` and nothing else. The PVC surgery is not written up anywhere and
-must be worked out at the time. Note the PVC is a standalone object referenced by
+binds a new empty volume, and only then load the dump back in. **That enumeration
+is the whole of the written-up procedure** — it is a sequence of steps, not a
+rehearsed runbook with per-step commands and verification, so expect to work out the
+exact invocations at the time. Only its last step is documented properly:
+["Restoring the database"](#restoring-the-database--unrehearsed) covers
+dump → `psql` and nothing else. Note the PVC is a standalone object referenced by
 `claimName` (`postgres.yml`), not a `volumeClaimTemplates` entry, so it is deleted and
 recreated independently of the StatefulSet. `local-path` PVs additionally use
 `reclaimPolicy: Delete`, unlike `nfs` and `nfs-bulk` which are `Retain`, so deleting
@@ -465,6 +487,13 @@ kubectl --context local-k3s wait --for=condition=complete job/immich-dump-ls -n 
 kubectl --context local-k3s delete job immich-dump-ls -n immich
 ```
 
+The listing is printed by `logs -f`, so `LS COMPLETE` arrives *after* it. **An
+`LS FAILED` here can be false:** `logs -f` follows the `apply` by one line and may
+error out with `is waiting to start: ContainerCreating`, leaving the classifying
+`wait` to time out and print `LS FAILED` for a healthy Job. The `failed=` field is
+the tell — empty means still running, `failed=1` means a real failure — and the
+remedy is simply to re-run the `logs -f` line, which attaches once the pod is up.
+
 The Job mounts `readOnly: true` because listing needs nothing more; it is a
 deliberately inert way to read the PVC while the rest of the stack is broken.
 
@@ -582,7 +611,10 @@ silently broke the `pg_dump` CronJob once. Anything you run in this image must u
 
 ### 4. Watch it — read the output, not just the exit code
 
-The Job sets `backoffLimit: 0`, so a **failed** Job never receives the `complete`
+This Job sets `backoffLimit: 0` — as does `immich-dump-ls`; both are embedded in
+this file. (That is **not** true of the manual pgdump test in step 5 of "Install
+order", which is created from `pgdump-cronjob.yml` and inherits its
+`backoffLimit: 2`.) With no retries a **failed** Job never receives the `complete`
 condition, and waiting only on `complete` would block for the entire hour before
 telling you anything — during an outage. Stream the log instead. It returns as soon
 as the pod exits either way, and it puts the failure text on screen, which is what
@@ -604,10 +636,21 @@ execution falls straight through mid-restore with no indication anything was
 skipped; and `%1`/`%2` are absolute job numbers, so with any pre-existing background
 job they name the operator's own process and `kill` SIGTERMs it. The second command
 above only classifies the outcome, since the log has already streamed — that is why
-its timeout is 30s rather than an hour. If `logs -f` returns at once complaining the
-container `is waiting to start`, the pod simply had not started yet; run it again.
+its timeout is 30s rather than an hour.
 
-Expected: `RESTORE COMPLETE`, then `restore finished` in the log.
+**If `logs -f` returns at once complaining the container `is waiting to start:
+ContainerCreating`, the `RESTORE FAILED` line printed straight after it is a false
+verdict** — the pod simply had not started, and the 30s `wait` expired against a
+restore that may legitimately run for an hour. The `failed=` field the diagnostic
+branch prints is the tell: **empty means the restore is still running**, `failed=1`
+means a genuine failure. Re-run the `logs -f` line; it attaches once the pod is up.
+`--pod-running-timeout` does not prevent this and must not be credited with doing
+so: if a matching pod object exists at all, `kubectl` returns it immediately
+whatever its phase and never consults the timeout, so the flag covers only the
+narrower case where the pod object does not yet exist.
+
+Expected, in this order: `restore finished` in the log, then `RESTORE COMPLETE` —
+the log streams first and the verdict is printed after it.
 `--single-transaction` with `ON_ERROR_STOP=1` makes the load all-or-nothing, so a
 half-applied restore should not be possible. If it aborts, read the first `ERROR:`
 line — do not re-run blindly, and do not start the server against a database whose
