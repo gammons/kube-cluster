@@ -6,7 +6,7 @@
 
 **Architecture:** The official Immich Helm chart (OCI, 0.13.2) provides server, machine-learning, and valkey. PostgreSQL is a hand-written single-replica StatefulSet using Immich's own image, which ships VectorChord preinstalled — CloudNativePG is unusable on this cluster's EOL Kubernetes 1.29. The photo library lives on an NFS-backed `nfs-bulk` PVC; the database lives on node-local `local-path`. Access is a Tailscale L4 Service proxy, not an Ingress.
 
-**Tech Stack:** k3s v1.29.4, Helm (OCI registry), Immich v3.2.0, PostgreSQL 17 + VectorChord 1.1.1, Valkey, nfs-subdir-external-provisioner, Tailscale operator, Velero, kube-prometheus-stack, immich-go v0.32.0, rclone.
+**Tech Stack:** k3s v1.29.4, Helm (OCI registry), Immich v3.2.0, PostgreSQL 17 + VectorChord 1.1.1, Valkey, nfs-subdir-external-provisioner, Tailscale operator, Velero, kube-prometheus-stack, immich-go v0.32.0.
 
 **Spec:** `docs/superpowers/specs/2026-09-12-immich-homelab-design.md`
 
@@ -51,7 +51,6 @@ immich/
   alerts.yml              PrometheusRule
   import/
     takeout-pvc.yml       transient 1.5Ti PVC, deleted after import
-    rclone-job.yml        Google Drive -> NAS
     immich-go-job.yml     Takeout -> Immich
 ```
 
@@ -1126,19 +1125,49 @@ git commit -m "add immich readme"
 
 **Files:**
 - Create: `immich/import/takeout-pvc.yml`
-- Create: `immich/import/rclone-job.yml`
 
 **Interfaces:**
-- Consumes: `nfs-bulk` storage class.
-- Produces: PVC `immich-takeout` populated with Takeout archives.
+- Consumes: `nfs-bulk` storage class; an NFS mount of the bulk pool on the workstation.
+- Produces: PVC `immich-takeout` populated with integrity-verified Takeout archives.
 
-> **GATE:** This task cannot start until the Google Takeout export has been requested **with "Add to Drive" as the destination** and Google reports it complete. Do not use emailed download links — with 10 GB chunks this is 30–100 files, and the links expire in about seven days with limited retries.
+> **GATE:** This task cannot start until the Google Takeout export is complete and its **download links are live**. Google delivers Takeout as browser-authenticated download links that expire roughly **seven days** after generation, with a limited number of retries per link. There is no server-side pull path: the links require the browser session, so `rclone`, `curl`, and in-cluster Jobs cannot fetch them. The export is therefore downloaded **by the browser on the workstation, writing directly onto the NAS over NFS**. Budget the download inside the seven-day window; if a link expires, regenerate that chunk from the Takeout page.
+
+> **Why not rclone/Drive:** an earlier revision of this plan pulled the export from Google Drive with an `rclone` Job and an `immich-rclone` Secret. That design is dead — the export was delivered as expiring download links, not as Drive files. Do not create `immich/import/rclone-job.yml`, do not create the `immich-rclone` Secret, and do not configure a Drive remote. Nothing in Tasks 10–12 depends on them.
 
 - [ ] **Step 1: Confirm the export is complete and note its true size**
 
-Check Google Takeout. Record the total size and file count. If the total exceeds 1.4 TB, increase the PVC size in Step 2 accordingly.
+On the Takeout page, record the **total size** and the **exact chunk count**. Write both down — Step 7 compares against them, and a missing chunk is otherwise invisible.
 
-- [ ] **Step 2: Create `immich/import/takeout-pvc.yml`**
+If the total exceeds 1.4 TB, raise the PVC size in Step 3 before applying. Also confirm the bulk pool has room — after Step 2 is done, this is simply:
+
+```bash
+df -h /mnt/takeout
+```
+
+Expected: free space comfortably exceeding the Takeout total (the library PVC shares this pool).
+
+Note the chunk archive format while you are there — Takeout emits either `.zip` or `.tgz` depending on what was selected at export time. Step 8 handles both, but you should know which you have.
+
+- [ ] **Step 2: Mount the bulk pool on the workstation**
+
+The browser writes to the NAS directly; no local disk staging, and no second copy.
+
+```bash
+# Arch: nfs-utils provides mount.nfs. Debian/Ubuntu: nfs-common.
+pacman -Qi nfs-utils >/dev/null 2>&1 || sudo pacman -S --needed nfs-utils
+
+sudo mkdir -p /mnt/takeout
+sudo mount -t nfs -o vers=4 192.168.5.1:/bulk-pool/k3s-bulk /mnt/takeout
+mount | grep /mnt/takeout
+```
+
+Expected: a line reading `192.168.5.1:/bulk-pool/k3s-bulk on /mnt/takeout type nfs4 (rw,...)`.
+
+The export `/bulk-pool/k3s-bulk` is shared to `192.168.0.0/16` over both NFSv3 and NFSv4; the workstation must be inside that range. It is an unauthenticated `sec=sys` export — the server trusts the client's uid, which is exactly what makes Step 5 work.
+
+Do **not** unmount until the download and Step 7 are finished.
+
+- [ ] **Step 3: Create `immich/import/takeout-pvc.yml`**
 
 ```yaml
 ---
@@ -1156,30 +1185,87 @@ spec:
       storage: 1500Gi
 ```
 
-- [ ] **Step 3: Create the rclone config secret**
-
-Generate an rclone remote for Google Drive locally (`rclone config`, remote named `gdrive`), then:
+Apply it:
 
 ```bash
-kubectl --context local-k3s create secret generic immich-rclone -n immich \
-  --from-file=rclone.conf="$HOME/.config/rclone/rclone.conf"
+kubectl --context local-k3s apply -f immich/import/takeout-pvc.yml
+kubectl --context local-k3s get pvc -n immich immich-takeout
 ```
 
-The local `immich/rclone.conf` path is git-ignored by Task 1.
+Expected: `STATUS  Bound`, `CAPACITY  1500Gi`, `STORAGECLASS  nfs-bulk`. `nfs-bulk` is `Immediate`, so it binds without a consumer pod.
 
-- [ ] **Step 4: Create `immich/import/rclone-job.yml`**
+- [ ] **Step 4: Locate the provisioner-created directory**
 
-Adjust `gdrive:Takeout` to the actual Drive folder path.
+`nfs-subdir-external-provisioner` names the directory `<namespace>-<pvc>-<pv-name>`. Derive it rather than typing it — the PV uid is random:
 
-```yaml
+```bash
+PV=$(kubectl --context local-k3s get pvc -n immich immich-takeout -o jsonpath='{.spec.volumeName}')
+TAKEOUT_DIR="/mnt/takeout/immich-immich-takeout-${PV}"
+echo "$TAKEOUT_DIR"
+ls -ld "$TAKEOUT_DIR"
+```
+
+Expected: a path of the form `/mnt/takeout/immich-immich-takeout-pvc-<uuid>`, listed as `drwxrwxrwx 2 root root`.
+
+The mode matters. The export root `/mnt/takeout` itself is `drwxr-xr-x root root`, so an unprivileged user cannot create anything at its top level. The provisioner creates PVC subdirectories world-writable, and that is the only reason the browser can write here. Do not attempt to `mkdir` in `/mnt/takeout` directly.
+
+- [ ] **Step 5: Prove an unprivileged write works — before downloading anything**
+
+The browser runs as your normal user, not root. Verify that uid actually has write access. **Do not use `sudo`** — sudo passing is not evidence.
+
+```bash
+echo "canary $(date -Is)" > "$TAKEOUT_DIR/.canary-write-test"
+stat -c '%n uid=%u gid=%g mode=%a size=%s' "$TAKEOUT_DIR/.canary-write-test"
+rm -f "$TAKEOUT_DIR/.canary-write-test"
+```
+
+Expected: the `stat` line reports `uid=<your uid>` (e.g. `uid=1000`) and a non-zero size, and the `rm` succeeds.
+
+If this fails with `Permission denied`, **stop**. Every later step depends on it. Check that the mount is `rw` and not `ro`, that the export is not squashing your uid to `nobody`, and that the directory really is mode `777`. Do not work around it by running the browser as root.
+
+- [ ] **Step 6: Point the browser at the directory and download every chunk**
+
+Set the browser's download directory to the **exact** path printed in Step 4:
+
+- Firefox: Settings → General → Downloads → *Save files to* → the `$TAKEOUT_DIR` path. Also **uncheck** *Always ask you where to save files*, otherwise every chunk needs a manual dialog.
+- Chrome/Chromium: Settings → Downloads → *Location* → the `$TAKEOUT_DIR` path, and turn *Ask where to save each file* off.
+
+Then open the Takeout page and click every chunk link. Browsers queue downloads rather than running them all at once, so clicking through all of them in one pass is fine and is the intended workflow — do not hand-download one per day, the links expire in about seven days.
+
+Notes:
+- Leave the machine awake and the mount up. A suspend that drops the NFS mount mid-write corrupts the in-flight chunk (caught in Step 8, but it costs a re-download).
+- Throughput is bounded by the LAN and the NAS, not by Google.
+- Do not rename the files. Task 11 globs on the archive extension.
+
+- [ ] **Step 7: Verify the file count and total size, and that nothing is still in flight**
+
+```bash
+ls -la "$TAKEOUT_DIR"
+ls -1 "$TAKEOUT_DIR" | wc -l
+du -sh "$TAKEOUT_DIR"
+find "$TAKEOUT_DIR" \( -name '*.crdownload' -o -name '*.part' -o -name '*.partial' \) -print
+```
+
+Expected: the file count equals the chunk count from Step 1, `du -sh` matches the Takeout total, and the `find` prints **nothing**. Any `.crdownload`/`.part` file is an unfinished or abandoned download — delete it and re-fetch that chunk.
+
+A count or size that is short means a link expired or a click was missed. Fix it now; a missing chunk is silently missing photos.
+
+- [ ] **Step 8: Verify the archives are not corrupt**
+
+This runs in-cluster against the PVC, not on the workstation — it reads every byte of every archive and the NAS is the right side of that transfer. It handles `.zip` and `.tgz`/`.tar.gz`, so it is correct whichever format Takeout produced.
+
+`unzip` here is Info-ZIP from Debian, not busybox: Takeout chunks above 4 GB are zip64, which busybox `unzip` cannot read, and a false `CORRUPT` on every file is worse than no check at all.
+
+```bash
+kubectl --context local-k3s apply -f - <<'EOF'
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: immich-rclone-takeout
+  name: immich-takeout-verify
   namespace: immich
 spec:
-  backoffLimit: 3
+  backoffLimit: 0
   template:
     metadata:
       annotations:
@@ -1193,243 +1279,314 @@ spec:
           - name: ndots
             value: "1"
       containers:
-        - name: rclone
-          image: rclone/rclone:1.68
+        - name: verify
+          image: debian:bookworm-slim
           command:
             - /bin/sh
             - -c
             - |
-              # NOTE: rclone/rclone is Alpine-based, so /bin/sh is busybox ash,
-              # NOT bash. Do NOT add `pipefail` here — Task 6 proved that
-              # `set -o pipefail` under a non-bash /bin/sh aborts the script on
-              # line 1 as a special-builtin failure. There are no pipes in this
-              # script, so `set -eu` is sufficient and correct.
               set -eu
-              rclone --config /cfg/rclone.conf copy \
-                gdrive:Takeout /takeout \
-                --transfers 4 --checkers 8 \
-                --progress --stats 1m --stats-one-line
-              echo "--- transferred ---"
-              ls -la /takeout
-              du -sh /takeout
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends unzip >/dev/null
+              cd /takeout
+              found=0
+              fail=0
+              for f in *; do
+                [ -f "$f" ] || continue
+                case "$f" in
+                  *.zip)
+                    found=$((found + 1))
+                    if unzip -t -qq "$f" >/dev/null 2>&1; then
+                      echo "OK       $f"
+                    else
+                      echo "CORRUPT  $f"
+                      fail=$((fail + 1))
+                    fi
+                    ;;
+                  *.tgz|*.tar.gz)
+                    found=$((found + 1))
+                    if tar -tzf "$f" >/dev/null 2>&1; then
+                      echo "OK       $f"
+                    else
+                      echo "CORRUPT  $f"
+                      fail=$((fail + 1))
+                    fi
+                    ;;
+                  *)
+                    echo "SKIPPED  $f (not .zip/.tgz/.tar.gz)"
+                    ;;
+                esac
+              done
+              echo "--- checked $found archives, $fail corrupt ---"
+              if [ "$found" -eq 0 ]; then
+                echo "ERROR: no archives found in /takeout"
+                exit 1
+              fi
+              [ "$fail" -eq 0 ]
           volumeMounts:
-            - name: cfg
-              mountPath: /cfg
-              readOnly: true
             - name: takeout
               mountPath: /takeout
+              readOnly: true
           resources:
             requests:
               cpu: 500m
-              memory: 512Mi
+              memory: 256Mi
             limits:
               cpu: "2"
-              memory: 2Gi
+              memory: 1Gi
       volumes:
-        - name: cfg
-          secret:
-            secretName: immich-rclone
         - name: takeout
           persistentVolumeClaim:
             claimName: immich-takeout
+EOF
+
+kubectl --context local-k3s logs -n immich -f job/immich-takeout-verify
+kubectl --context local-k3s wait --for=condition=complete job/immich-takeout-verify -n immich --timeout=43200s
 ```
 
-The Velero exclusion annotation is present from the start — without it, the first nightly backup after this Job starts would try to upload up to 1.5 TB at ~2 MB/s.
+This is a full read of the entire export over NFS — hours, not minutes.
 
-- [ ] **Step 5: Apply and monitor**
+The `backup.velero.io/backup-volumes-excludes: takeout` annotation is mandatory, not decorative. The `immich` namespace **is** in the Velero backup schedule (Task 8), so any pod mounting the 1.5 Ti takeout volume without that annotation would have its next nightly backup try to upload the whole export at roughly 2 MB/s. Every pod that mounts `immich-takeout` — this Job and the Task 11 import Job — must carry it.
+
+Expected: one `OK` line per chunk, a trailing `--- checked <N> archives, 0 corrupt ---` where `<N>` equals the Step 1 chunk count, and the Job reaching `complete`.
+
+Any `CORRUPT` line means a truncated or damaged chunk, which silently skips photos on import. Re-download that chunk from Takeout and re-run the Job. Any `SKIPPED` line means a stray file — investigate it before continuing. The Job exiting non-zero is the intended failure signal; do not start Task 11 until it passes.
+
+Clean up the Job once it is green:
 
 ```bash
-kubectl --context local-k3s apply -f immich/import/takeout-pvc.yml
-kubectl --context local-k3s apply -f immich/import/rclone-job.yml
-kubectl --context local-k3s logs -n immich -f job/immich-rclone-takeout
+kubectl --context local-k3s delete job immich-takeout-verify -n immich
 ```
 
-This runs for hours. Monitor the one-line stats.
-
-- [ ] **Step 6: Verify the transfer is complete and sizes match**
+- [ ] **Step 9: Commit**
 
 ```bash
-kubectl --context local-k3s wait --for=condition=complete job/immich-rclone-takeout -n immich --timeout=86400s
-kubectl --context local-k3s logs -n immich job/immich-rclone-takeout --tail=30
-```
-
-Expected: `du -sh /takeout` reports a size matching the Takeout total from Step 1, and the file count matches. A short transfer means silent failure — re-run rclone, which resumes.
-
-- [ ] **Step 7: Verify the archives are not corrupt**
-
-```bash
-kubectl --context local-k3s run zipcheck -n immich --rm -i --restart=Never \
-  --image=busybox:1.36 \
-  --overrides='{"spec":{"containers":[{"name":"zipcheck","image":"busybox:1.36","command":["sh","-c","for f in /takeout/*.zip; do unzip -t \"$f\" >/dev/null 2>&1 && echo \"OK $f\" || echo \"CORRUPT $f\"; done"],"volumeMounts":[{"name":"t","mountPath":"/takeout"}]}],"volumes":[{"name":"t","persistentVolumeClaim":{"claimName":"immich-takeout"}}]}}'
-```
-
-Expected: every file reports `OK`. Re-download any `CORRUPT` file before importing — a truncated archive silently skips photos.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add immich/import/takeout-pvc.yml immich/import/rclone-job.yml
-git commit -m "add immich takeout ingest job"
+git add immich/import/takeout-pvc.yml
+git commit -m "add immich takeout pvc"
 ```
 
 ---
 
-## Task 11: Import with immich-go
+## Task 11: Import with immich-go (two passes)
 
 **Files:**
-- Create: `immich/import/immich-go-job.yml`
+- Create: `immich/import/immich-go-job.yml` (contains **both** Jobs)
 
 **Interfaces:**
 - Consumes: PVC `immich-takeout` (Task 10); Secret `immich-api` (Task 5); the in-cluster server Service.
 - Produces: the imported library, with dates, albums, and GPS preserved.
 
-> **Note on distribution:** immich-go publishes **release binaries only — there is no official container image.** Any plan or snippet referencing `ghcr.io/simulot/immich-go` is wrong. The Job below downloads and checksum-verifies the official tarball into a stock Debian image.
+The export did not land as a single clean set of zips. It must be imported in **two passes**:
+
+| Pass | Source | Mode |
+| --- | --- | --- |
+| 1 | the `takeout-*.zip` chunks | `upload from-google-photos` over the zips |
+| 2 | one standalone `PXL_20250517_140916476-036.mp4` (19.5 GB) | `upload from-google-photos` over a small staged folder |
+
+Google served that MP4 **outside** the zips because it exceeds the 10 GB split size, so it occupies chunk slot `036` and no `036.zip` exists. A `*.zip` glob cannot see it. Its sidecar **is** inside the zips — verified present at `Takeout/Google Photos/Photos from 2025/PXL_20250517_140916476.mp4.supplemental-metadata.json` in `takeout-20260913T100905Z-1-035.zip`. Pass 2 re-pairs the two.
+
+Do not fall back to filename-date parsing for that video. Its sidecar records `photoTakenTime` `1747493384` = 2025-05-17 **14:49:44 UTC** plus GPS `40.0398, -75.2457`, whereas the filename encodes `14:09:16`. The filename is both ~40 minutes off and timezone-ambiguous, and carries no GPS.
+
+> **Note on distribution:** immich-go publishes **release binaries only — there is no official container image.** Any plan or snippet referencing `ghcr.io/simulot/immich-go` is wrong. The Jobs download and checksum-verify the official tarball into a stock Debian image.
 >
 > Pinned for v0.32.0, `linux/amd64` (all four nodes are amd64):
 > - URL: `https://github.com/simulot/immich-go/releases/download/v0.32.0/immich-go_Linux_x86_64.tar.gz`
 > - SHA256: `6e2ad86bafdadb9466d6515de7cb882726c0aea1a21d51164dff361d7d480a97`
 
-- [ ] **Step 1: Verify immich-go v0.32.0 command syntax locally**
+- [ ] **Step 0: Confirm the download is actually finished**
 
-The flag syntax must be confirmed against the actual release rather than assumed — it has changed across versions.
+**The chunk sequence runs past 050.** Chunk `054` exists, so the set is `001`–`054` with `036` being the standalone MP4 — i.e. **53 zips + 1 MP4**, not the 49 zips assumed earlier. Any Chrome `*.crdownload` file in the directory is a download still in flight.
 
 ```bash
-cd /tmp
-curl -sSL -o immich-go.tar.gz \
-  https://github.com/simulot/immich-go/releases/download/v0.32.0/immich-go_Linux_x86_64.tar.gz
-echo "6e2ad86bafdadb9466d6515de7cb882726c0aea1a21d51164dff361d7d480a97  immich-go.tar.gz" | sha256sum -c -
-tar xzf immich-go.tar.gz
-./immich-go upload from-google-photos --help
+D=/mnt/takeout/immich-immich-takeout-pvc-e995c66a-e1ed-444f-a66b-51227a1db4c9
+ls "$D"/*.crdownload 2>/dev/null && echo "DOWNLOADS STILL RUNNING - STOP"
+ls -1 "$D"/takeout-*.zip | sed -n 's/.*-1-\([0-9]\{3\}\)\.zip$/\1/p' | sort -n | uniq
 ```
 
-Expected: `sha256sum -c` prints `OK`, and the help text lists the upload flags.
+The `sed -n .../p` form is deliberate: it matches only names ending in exactly `NNN.zip`, so the duplicate `049 (1).zip` is excluded from the sequence check instead of corrupting it.
 
-Record the exact flag names for server URL, API key, and the archive path argument. If they differ from the ones used in Step 2, update Step 2 to match the help output — the help text is authoritative, this plan is not.
+Expected: no `.crdownload` files, and a contiguous `001..054` sequence with `036` absent — 53 entries. A gap means a chunk never downloaded and those photos would be silently missing. Do not start Pass 1 until this passes.
+
+**Status at time of writing: this check passes.** All 53 zips are present (`001`–`054`, no `036`), no `.crdownload` files remain, and the standalone `PXL_20250517_140916476-036.mp4` is present at 19,511,783,135 bytes. `054` is the highest chunk observed; it is treated as the end of sequence because the numbering is contiguous up to it and Chrome has no downloads in flight.
+
+- [ ] **Step 0b: Resolve the duplicate chunk 049**
+
+`takeout-20260913T100905Z-1-049 (1).zip` is a second download of chunk 049. Left in place it is matched by the `*.zip` glob and chunk 049 is fed in twice.
+
+**Integrity-check both before removing either** — if they differ, one is corrupt and you need to keep the good one.
+
+```bash
+D=/mnt/takeout/immich-immich-takeout-pvc-e995c66a-e1ed-444f-a66b-51227a1db4c9
+sha256sum "$D/takeout-20260913T100905Z-1-049.zip" "$D/takeout-20260913T100905Z-1-049 (1).zip"
+```
+
+Expected: two identical digests. Only then remove `049 (1).zip`. If the digests differ, test both with `unzip -t` and keep the one that passes. (Their central directories have already been compared and match exactly — 8339 entries, identical names, sizes and CRCs — so identical digests are the expected outcome, but read 20 GB and confirm rather than assuming.)
+
+- [ ] **Step 1: immich-go v0.32.0 syntax — verified**
+
+Verified against the actual v0.32.0 binary (`commit f7d19fce`, `date 2026-06-25`). These are the real flag names, not assumptions:
+
+| Purpose | Flag |
+| --- | --- |
+| Server URL | `-s`, `--server` |
+| API key | `-k`, `--api-key` |
+| Dry run | `--dry-run` |
+| Media source | **positional**, after the flags |
+| Suppress TUI | `--no-ui` (required for readable `kubectl logs`) |
+| Error handling | `--on-errors` (`stop` default, `continue`, or a max count) |
+| Parallelism | `--concurrent-tasks` |
+
+Usage strings, verbatim:
+
+```
+immich-go upload from-google-photos [flags] <takeout-*.zip> | <takeout-folder>
+immich-go upload from-folder        [flags] <path>...
+```
+
+So `from-google-photos` accepts **either** multiple zip paths (a shell glob expands correctly) **or** one decompressed takeout folder. That folder form is what Pass 2 uses.
+
+Date-from-filename is **`--date-from-name`, and it exists only on `from-folder`** (default true, applies to jpg/mp4/heic/dng/cr2/cr3/arw/raf/nef/mov). `from-google-photos` has no such flag — it takes dates from the JSON sidecars. This is why Pass 2 uses `from-google-photos` on a staged folder rather than `from-folder`: `from-folder` would discard the sidecar's GPS and use the wrong timestamp.
+
+Two gotchas in the help output:
+- `--concurrent-tasks` documents its range as `1-20` but defaults to `24`. Always set it explicitly.
+- `--pause-immich-jobs` defaults to **true**, which is what we want — it keeps thumbnail/ML jobs off the SMR library disk during upload.
 
 - [ ] **Step 2: Create `immich/import/immich-go-job.yml`**
 
-```yaml
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: immich-go-import
-  namespace: immich
-spec:
-  backoffLimit: 0
-  template:
-    metadata:
-      annotations:
-        backup.velero.io/backup-volumes-excludes: takeout
-    spec:
-      restartPolicy: Never
-      dnsConfig:
-        options:
-          - name: ndots
-            value: "1"
-      containers:
-        - name: immich-go
-          image: debian:bookworm-slim
-          env:
-            - name: IMMICH_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: immich-api
-                  key: API_KEY
-            - name: IMMICH_GO_VERSION
-              value: "v0.32.0"
-            - name: IMMICH_GO_SHA256
-              value: "6e2ad86bafdadb9466d6515de7cb882726c0aea1a21d51164dff361d7d480a97"
-          command:
-            - /bin/bash
-            - -c
-            - |
-              set -euo pipefail
-              apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
-              cd /tmp
-              curl -sSL -o immich-go.tar.gz \
-                "https://github.com/simulot/immich-go/releases/download/${IMMICH_GO_VERSION}/immich-go_Linux_x86_64.tar.gz"
-              echo "${IMMICH_GO_SHA256}  immich-go.tar.gz" | sha256sum -c -
-              tar xzf immich-go.tar.gz
-              chmod +x ./immich-go
-              ./immich-go upload from-google-photos \
-                --server=http://immich-server.immich.svc.cluster.local:2283 \
-                --api-key="${IMMICH_API_KEY}" \
-                ${DRY_RUN:+--dry-run} \
-                /takeout/*.zip
-          volumeMounts:
-            - name: takeout
-              mountPath: /takeout
-              readOnly: true
-          resources:
-            requests:
-              cpu: "1"
-              memory: 1Gi
-            limits:
-              cpu: "2"
-              memory: 4Gi
-      volumes:
-        - name: takeout
-          persistentVolumeClaim:
-            claimName: immich-takeout
+The file defines **two** Jobs, `immich-go-import-zips` (Pass 1) and `immich-go-import-standalone` (Pass 2). See the file in the repo for the full manifest.
+
+Properties that are load-bearing in both Jobs — do not "clean them up":
+
+- **`backup.velero.io/backup-volumes-excludes: takeout` on the pod template is mandatory.** The `immich` namespace **is** in the `velero-homelab-daily` schedule (verified: its `includedNamespaces` lists `immich`). Without this annotation the next nightly backup attempts to upload the whole ~1.5 Ti takeout volume at roughly 2 MB/s. The annotation value must match the volume name `takeout`.
+- **`restartPolicy: Never` + `backoffLimit: 0`, and no `activeDeadlineSeconds`.** The import runs for hours; an auto-retry restarts from scratch and burns all of them. Failures are investigated by hand.
+- **Target the in-cluster Service** `http://immich-server.immich.svc.cluster.local:2283`, never the tailnet hostname — there is no reason to push hundreds of gigabytes through the Tailscale proxy.
+- **`--no-ui`**, or immich-go renders a TUI into the pod log and `kubectl logs` becomes unreadable.
+- **`--concurrent-tasks=4`** in Pass 1 (`=1` in Pass 2). The default of `24` is outside the tool's own documented `1-20` range, and high write concurrency is actively harmful on the SMR library disk.
+- Pass 1 mounts `/takeout` **read-only** and aborts if `049 (1).zip` is still present. Pass 2 mounts it **read-write** because it stages the sidecar and a hardlink.
+
+Pass 2 stages a minimal decompressed-takeout tree so immich-go sees a media + sidecar pair:
+
+```
+/takeout/_standalone036/Takeout/Google Photos/Photos from 2025/
+    PXL_20250517_140916476.mp4                              <- hardlink to the 19.5 GB file
+    PXL_20250517_140916476.mp4.supplemental-metadata.json   <- unzipped from chunk 035
 ```
 
-`backoffLimit: 0` is deliberate: a partial import that auto-retries from the beginning wastes hours. Investigate failures manually instead.
+The staged media file must use the **original** name with no `-036` chunk suffix, because the sidecar's `"title"` is `PXL_20250517_140916476.mp4` and that is how immich-go pairs them. The link is a **hardlink**, not a copy: same NFS filesystem, so no 19.5 GB of data moves. The Job falls back to `cp` if the NFS server refuses the link.
 
-The target is the in-cluster Service, not the Tailscale hostname — no reason to route hundreds of gigabytes through the tailnet proxy.
-
-- [ ] **Step 3: Dry run first**
+Apply one Job at a time — never the whole file:
 
 ```bash
-kubectl --context local-k3s create -f immich/import/immich-go-job.yml --dry-run=client -o yaml \
-  | python3 -c "
+# usage: jobsel <job-name> [dryrun]
+jobsel() {
+  python3 -c "
 import sys,yaml
-d=yaml.safe_load(sys.stdin)
-c=d['spec']['template']['spec']['containers'][0]
-c.setdefault('env',[]).append({'name':'DRY_RUN','value':'1'})
-d['metadata']['name']='immich-go-dryrun'
-print(yaml.safe_dump(d))
-" | kubectl --context local-k3s apply -f -
-
-kubectl --context local-k3s logs -n immich -f job/immich-go-dryrun
+name,dry=sys.argv[1],len(sys.argv)>2
+for d in yaml.safe_load_all(open('immich/import/immich-go-job.yml')):
+    if d and d['metadata']['name']==name:
+        if dry:
+            d['metadata']['name']=name+'-dryrun'
+            d['spec']['template']['spec']['containers'][0]['env'].append({'name':'DRY_RUN','value':'1'})
+        print(yaml.safe_dump(d))
+" "$@"
+}
 ```
 
-Expected: a plausible asset count with no authentication or parse errors. Compare the count against your Google Photos total before proceeding.
-
-- [ ] **Step 4: Run the real import**
+- [ ] **Step 3: Pass 1 dry run**
 
 ```bash
-kubectl --context local-k3s delete job immich-go-dryrun -n immich
-kubectl --context local-k3s apply -f immich/import/immich-go-job.yml
-kubectl --context local-k3s logs -n immich -f job/immich-go-import
+jobsel immich-go-import-zips dryrun | kubectl --context local-k3s apply -f -
+kubectl --context local-k3s logs -n immich -f job/immich-go-import-zips-dryrun
 ```
 
-This runs for many hours. There is no `activeDeadlineSeconds`, so it will not be killed mid-flight.
+The effective command line inside the pod is:
 
-- [ ] **Step 5: Verify the import completed and counts are sane**
+```
+immich-go upload from-google-photos \
+  --server=http://immich-server.immich.svc.cluster.local:2283 \
+  --api-key=$IMMICH_API_KEY --no-ui --concurrent-tasks=4 \
+  --on-errors=continue --dry-run /takeout/*.zip
+```
+
+Expected: the printed chunk count matches Step 0, and a plausible asset total with no auth or parse errors. **Chunk 035 will report an unmatched JSON** for `PXL_20250517_140916476.mp4` — that is correct and expected, the media for it arrives in Pass 2.
+
+- [ ] **Step 4: Pass 1 real run**
 
 ```bash
-kubectl --context local-k3s wait --for=condition=complete job/immich-go-import -n immich --timeout=172800s
+kubectl --context local-k3s delete job immich-go-import-zips-dryrun -n immich
+jobsel immich-go-import-zips | kubectl --context local-k3s apply -f -
+kubectl --context local-k3s logs -n immich -f job/immich-go-import-zips
+kubectl --context local-k3s wait --for=condition=complete job/immich-go-import-zips -n immich --timeout=172800s
+```
+
+Runs for many hours. No `activeDeadlineSeconds`, so it will not be killed mid-flight.
+
+- [ ] **Step 5: Pass 2 — the standalone MP4**
+
+```bash
+jobsel immich-go-import-standalone dryrun | kubectl --context local-k3s apply -f -
+kubectl --context local-k3s logs -n immich -f job/immich-go-import-standalone-dryrun
+```
+
+The effective command line is the same tool and mode, pointed at the staged folder:
+
+```
+immich-go upload from-google-photos \
+  --server=http://immich-server.immich.svc.cluster.local:2283 \
+  --api-key=$IMMICH_API_KEY --no-ui --concurrent-tasks=1 \
+  --dry-run /takeout/_standalone036
+```
+
+Expected: **exactly one** asset discovered, dated 2025-05-17, with GPS. If the dry run reports zero assets, immich-go did not accept the staged tree as a takeout folder — then, and only then, fall back to `upload from-folder --date-from-name /takeout/_standalone036/...`, accepting that GPS is lost and the timestamp comes from the filename (~40 minutes off). Do not reach for the fallback before the dry run proves it is needed.
+
+Then the real run:
+
+```bash
+kubectl --context local-k3s delete job immich-go-import-standalone-dryrun -n immich
+jobsel immich-go-import-standalone | kubectl --context local-k3s apply -f -
+kubectl --context local-k3s logs -n immich -f job/immich-go-import-standalone
+kubectl --context local-k3s wait --for=condition=complete job/immich-go-import-standalone -n immich --timeout=86400s
+```
+
+Afterwards remove the staging tree (the hardlink, not the original):
+
+```bash
+rm -rf "$D/_standalone036"
+```
+
+- [ ] **Step 6: Verify the import completed and counts are sane**
+
+```bash
 kubectl --context local-k3s exec -n immich immich-postgres-0 -- \
   psql -U immich -d immich -c "SELECT count(*) FROM asset;"
 kubectl --context local-k3s exec -n immich immich-postgres-0 -- \
   psql -U immich -d immich -c "SELECT count(*) FROM album;"
+kubectl --context local-k3s exec -n immich immich-postgres-0 -- \
+  psql -U immich -d immich -c "SELECT count(*) FROM \"user\";"
 ```
 
-Table names are singular in v3.2.0 (`StandardizeNames` migration); `assets`/`albums` do not exist. `user` is a reserved word and must be quoted as `public."user"` if you query it.
+Table names are singular in v3.2.0 (`StandardizeNames` migration) — verified against the live database, which has `asset`, `album` and `user`. `assets`/`albums`/`users` **do not exist**. `user` is a reserved word and must be quoted.
 
-Expected: the asset count is close to the dry-run figure, and the album count is non-zero — a zero album count means the `.json` sidecars were not parsed, which defeats the purpose of using immich-go.
+Confirm the big video specifically landed, with real metadata rather than an import-time default:
 
-- [ ] **Step 6: Spot-check metadata quality in the UI**
+```bash
+kubectl --context local-k3s exec -n immich immich-postgres-0 -- psql -U immich -d immich -c \
+  "SELECT \"originalFileName\", \"fileCreatedAt\" FROM asset WHERE \"originalFileName\" LIKE 'PXL_20250517_140916476%';"
+```
+
+Expected: the asset count is close to the Pass 1 dry-run figure plus one, the album count is non-zero — a zero album count means the `.json` sidecars were not parsed, which defeats the point of using immich-go — and the video's `fileCreatedAt` is 2025-05-17, not today.
+
+- [ ] **Step 7: Spot-check metadata quality in the UI**
 
 Open the web UI and confirm on a sample of photos:
 - capture dates are historical, **not** the import date (the single most common Takeout import failure)
 - albums from Google Photos are present
 - GPS/map data appears for photos that had it
+- the 40-minute 4K HEVC video from 2025-05-17 plays and sits on its correct date
 
 If dates are all "today", stop — the sidecars were not read, and the fix is the immich-go invocation, not a re-import on top of bad data.
 
-- [ ] **Step 7: Verify library files landed on the bulk pool**
+- [ ] **Step 8: Verify library files landed on the bulk pool**
 
 ```bash
 kubectl --context local-k3s exec -n immich deploy/immich-server -- du -sh /data
@@ -1439,12 +1596,20 @@ The library mounts at `/data` in v3.2.0 — `/usr/src/app/upload` does not exist
 
 Expected: a size on the order of the Takeout total.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add immich/import/immich-go-job.yml
 git commit -m "add immich-go import job"
 ```
+
+### Known forward risks
+
+Neither of these blocks the import, but both will shape what goes wrong during it. Watch for them rather than being surprised.
+
+**1. valkey can OOM under deep BullMQ queues.** Verified on the live deployment: `immich-valkey` has a hard `limits.memory: 512Mi`, and `redis-cli config get` reports `maxmemory 0` with `maxmemory-policy noeviction`. valkey therefore has no idea it is capped — it will never evict, it will simply grow until the kernel OOM-kills the container. An import of this size pushes very deep metadata-extraction and thumbnail queues into Redis. If the valkey pod starts restarting mid-import, that is this, and in-flight queued jobs are lost (the uploaded assets survive in Postgres; the derived work has to be re-queued from the admin job panel). Mitigations if it bites: raise the limit, or set `maxmemory` to roughly 80% of the limit with `allkeys-lru`.
+
+**2. The library sits on an SMR drive.** Shingled media rewrites whole bands for small random writes. Thumbnail generation is exactly that workload — millions of small files — so it will be slow, and it will stay slow long after the upload itself finishes. This is why `--pause-immich-jobs` (default true) matters, why ML stays disabled until Task 12, and why `--concurrent-tasks` is held at 4. Expect the post-import thumbnail backlog to take substantially longer than the transfer did; do not read a stalled-looking job queue as a failure before checking disk latency.
 
 ---
 
@@ -1543,7 +1708,7 @@ Expected: a count approaching the total asset count.
 Only after Steps 5 and 6 confirm a good import.
 
 ```bash
-kubectl --context local-k3s delete job immich-go-import immich-rclone-takeout -n immich --ignore-not-found
+kubectl --context local-k3s delete job immich-go-import immich-takeout-verify -n immich --ignore-not-found
 kubectl --context local-k3s delete -f immich/import/takeout-pvc.yml
 ```
 
@@ -1590,7 +1755,7 @@ git commit -m "enable immich machine learning after import"
 
 No gaps.
 
-**2. Placeholder scan.** One intentional placeholder remains: `__DB_STORAGE_TYPE__` in Task 3, which Task 2 exists specifically to resolve, and Task 3 Step 3 states the substitution explicitly. Two values require environment-specific input and say so at point of use: the Drive folder path (Task 10 Step 4) and the API key (Task 5 Step 5). No `TBD`, `TODO`, or "handle errors appropriately" instructions.
+**2. Placeholder scan.** One intentional placeholder remains: `__DB_STORAGE_TYPE__` in Task 3, which Task 2 exists specifically to resolve, and Task 3 Step 3 states the substitution explicitly. Two values require environment-specific input and say so at point of use: the provisioned takeout directory path, which is derived at runtime (Task 10 Step 4), and the API key (Task 5 Step 5). No `TBD`, `TODO`, or "handle errors appropriately" instructions.
 
 **2a. External reference verification.** Every image and metric referenced was checked against its registry or against the live cluster, not recalled:
 
@@ -1598,18 +1763,18 @@ No gaps.
 |---|---|
 | `oci://ghcr.io/immich-app/immich-charts/immich:0.13.2` | verified, appVersion v3.2.0 |
 | `ghcr.io/immich-app/postgres:17-vectorchord1.1.1` | verified, HTTP 200 |
-| `rclone/rclone:1.68`, `curlimages/curl:8.10.1`, `busybox:1.36`, `debian:bookworm-slim` | verified |
+| `curlimages/curl:8.10.1`, `busybox:1.36`, `debian:bookworm-slim` | verified |
 | `ghcr.io/simulot/immich-go` | **does not exist — corrected.** immich-go ships release binaries only; Task 11 now downloads and checksum-verifies the tarball |
 | `prometheus-kube-prometheus-stack-prometheus-0` | verified, running |
 | `kube_cronjob_status_last_successful_time`, `kube_statefulset_status_replicas_ready`, `kubelet_volume_stats_{used,capacity}_bytes` | all present; kube-state-metrics is deployed |
 | Chart values keys (`server.service.main.annotations`, `defaultPodOptions.dnsConfig`, `immich.persistence.library.existingClaim`, `immich.configuration`) | verified by rendering chart 0.13.2 |
 | `{{y}}` in values survives Helm without rendering | verified by rendering |
 
-The immich-go image was a genuine error in the first draft of this plan — the kind that would have failed at `ImagePullBackOff` after the multi-hour rclone transfer had already completed.
+The immich-go image was a genuine error in the first draft of this plan — the kind that would have failed at `ImagePullBackOff` after the multi-day Takeout download had already completed.
 
 **3. Name consistency.** Verified across tasks:
 - PVCs: `immich-library`, `immich-ml-cache`, `immich-pgdump`, `immich-postgres-data`, `immich-valkey-data`, `immich-takeout` — consistent in Tasks 1, 3, 4, 6, 8, 10, 11, 12.
-- Secrets: `immich-postgres` (3), `immich-api` (5, 11), `immich-rclone` (10).
+- Secrets: `immich-postgres` (3), `immich-api` (5, 11). Task 10 needs no secret — the Takeout download is browser-authenticated on the workstation.
 - Services and ports: `immich-server:2283`, `immich-machine-learning:3003`, `immich-valkey:6379`, `immich-postgres:5432` — all verified against rendered chart output.
 - Velero volume names in exclusion annotations (`data`, `cache`, `takeout`) match the volume names in the pod specs that define them, checked in Task 8 Step 1.
 - ConfigMap `immich-immich-config` matches the rendered chart name.

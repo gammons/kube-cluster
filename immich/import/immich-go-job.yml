@@ -1,0 +1,182 @@
+---
+# Two-pass Google Takeout import.
+#
+# Pass 1 (immich-go-import-zips): the takeout-*.zip chunks via `upload from-google-photos`.
+# Pass 2 (immich-go-import-standalone): the one standalone MP4 that Google served
+#   outside the zips because it exceeds the 10 GB split size, re-paired with the
+#   sidecar JSON that *is* inside chunk 035.
+#
+# This file holds both Jobs. Do NOT `kubectl apply -f` it wholesale — select one
+# Job at a time with the helper in Task 11 of the plan.
+#
+# immich-go ships release binaries only. There is no official container image;
+# `ghcr.io/simulot/immich-go` does not exist. The binary is downloaded in-Job and
+# checksum-verified into a stock Debian image.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: immich-go-import-zips
+  namespace: immich
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        # MANDATORY. The immich namespace is in the Velero daily schedule, so
+        # without this the next nightly backup tries to upload the whole ~1.5 Ti
+        # takeout volume at ~2 MB/s. Value must match the volume name below.
+        backup.velero.io/backup-volumes-excludes: takeout
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: immich-go
+          image: debian:bookworm-slim
+          env:
+            - name: IMMICH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: immich-api
+                  key: API_KEY
+            - name: IMMICH_SERVER
+              value: http://immich-server.immich.svc.cluster.local:2283
+            - name: IMMICH_GO_VERSION
+              value: "v0.32.0"
+            - name: IMMICH_GO_SHA256
+              value: "6e2ad86bafdadb9466d6515de7cb882726c0aea1a21d51164dff361d7d480a97"
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends curl ca-certificates
+              cd /tmp
+              curl -sSL -o immich-go.tar.gz \
+                "https://github.com/simulot/immich-go/releases/download/${IMMICH_GO_VERSION}/immich-go_Linux_x86_64.tar.gz"
+              echo "${IMMICH_GO_SHA256}  immich-go.tar.gz" | sha256sum -c -
+              tar xzf immich-go.tar.gz
+              chmod +x ./immich-go
+              ./immich-go version
+
+              # Refuse to run if the duplicate chunk is still present: the glob
+              # would feed chunk 049 in twice.
+              if [ -e "/takeout/takeout-20260913T100905Z-1-049 (1).zip" ]; then
+                echo "FATAL: duplicate '049 (1).zip' still present; resolve it first" >&2
+                exit 1
+              fi
+
+              ls -1 /takeout/*.zip | sed 's#.*/##'
+              echo "chunk count: $(ls -1 /takeout/*.zip | wc -l)"
+
+              ./immich-go upload from-google-photos \
+                --server="${IMMICH_SERVER}" \
+                --api-key="${IMMICH_API_KEY}" \
+                --no-ui \
+                --concurrent-tasks=4 \
+                --on-errors=continue \
+                ${DRY_RUN:+--dry-run} \
+                /takeout/*.zip
+          volumeMounts:
+            - name: takeout
+              mountPath: /takeout
+              readOnly: true
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: takeout
+          persistentVolumeClaim:
+            claimName: immich-takeout
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: immich-go-import-standalone
+  namespace: immich
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        backup.velero.io/backup-volumes-excludes: takeout
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: immich-go
+          image: debian:bookworm-slim
+          env:
+            - name: IMMICH_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: immich-api
+                  key: API_KEY
+            - name: IMMICH_SERVER
+              value: http://immich-server.immich.svc.cluster.local:2283
+            - name: IMMICH_GO_VERSION
+              value: "v0.32.0"
+            - name: IMMICH_GO_SHA256
+              value: "6e2ad86bafdadb9466d6515de7cb882726c0aea1a21d51164dff361d7d480a97"
+            - name: STANDALONE_MP4
+              value: PXL_20250517_140916476-036.mp4
+            - name: SIDECAR_ZIP
+              value: takeout-20260913T100905Z-1-035.zip
+            - name: SIDECAR_PATH
+              value: Takeout/Google Photos/Photos from 2025/PXL_20250517_140916476.mp4.supplemental-metadata.json
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends curl ca-certificates unzip
+              cd /tmp
+              curl -sSL -o immich-go.tar.gz \
+                "https://github.com/simulot/immich-go/releases/download/${IMMICH_GO_VERSION}/immich-go_Linux_x86_64.tar.gz"
+              echo "${IMMICH_GO_SHA256}  immich-go.tar.gz" | sha256sum -c -
+              tar xzf immich-go.tar.gz
+              chmod +x ./immich-go
+
+              # Rebuild a minimal decompressed-takeout tree so immich-go sees the
+              # media and its Google sidecar as a pair. The staged media file must
+              # use the ORIGINAL name (no -036 chunk suffix) to match "title" in
+              # the sidecar JSON.
+              STAGE="/takeout/_standalone036/Takeout/Google Photos/Photos from 2025"
+              mkdir -p "${STAGE}"
+
+              unzip -o -j "/takeout/${SIDECAR_ZIP}" "${SIDECAR_PATH}" -d "${STAGE}"
+
+              # Hardlink, not copy: same NFS filesystem, so this moves no data.
+              # Fall back to a copy if the NFS server refuses hardlinks.
+              if [ ! -e "${STAGE}/PXL_20250517_140916476.mp4" ]; then
+                ln "/takeout/${STANDALONE_MP4}" "${STAGE}/PXL_20250517_140916476.mp4" \
+                  || cp "/takeout/${STANDALONE_MP4}" "${STAGE}/PXL_20250517_140916476.mp4"
+              fi
+
+              ls -la "${STAGE}"
+
+              ./immich-go upload from-google-photos \
+                --server="${IMMICH_SERVER}" \
+                --api-key="${IMMICH_API_KEY}" \
+                --no-ui \
+                --concurrent-tasks=1 \
+                ${DRY_RUN:+--dry-run} \
+                /takeout/_standalone036
+          volumeMounts:
+            # Read-write: this pass stages the sidecar + hardlink under /takeout.
+            - name: takeout
+              mountPath: /takeout
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: takeout
+          persistentVolumeClaim:
+            claimName: immich-takeout
