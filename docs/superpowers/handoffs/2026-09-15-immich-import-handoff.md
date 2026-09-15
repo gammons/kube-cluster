@@ -142,6 +142,81 @@ the repair pass to avoid re-triggering the race.
 
 ---
 
+## !! There is a large post-import pipeline nobody has accounted for !!
+
+Discovered live, and neither the spec nor the plan mentions it. **Do not read "Pass 1
+finished" as "the import is done."**
+
+Every uploaded file is currently sitting in **`/data/upload`**, not `/data/library`:
+
+```
+/data/upload          11G      <- created 02:53Z, exactly when uploads began
+/data/library         2.0K     <- empty
+/data/thumbs          2.0K     <- empty
+/data/encoded-video   2.0K     <- empty
+```
+
+immich-go's `--pause-immich-jobs` (default **true**) has paused these queues, confirmed
+via `/api/jobs`:
+
+| Queue | Paused |
+|---|---|
+| `metadataExtraction` | **yes** |
+| `thumbnailGeneration` | **yes** |
+| `videoConversion` | **yes** |
+| `faceDetection` | **yes** |
+| `smartSearch` | **yes** |
+| `storageTemplateMigration` | no |
+
+`storageTemplateMigration` is *not* paused, but it cannot do anything yet: the storage
+template is `{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}`, which needs the capture date, and
+`metadataExtraction` is what produces it. So the relocation is blocked behind a paused
+queue.
+
+**After Pass 1 completes, expect this sequence — on an SMR drive:**
+
+1. `metadataExtraction` over ~119,624 assets — produces the dates.
+2. `storageTemplateMigration` moves **~543 GB** of files from `/data/upload` into
+   `/data/library/{{y}}/{{y}}-{{MM}}-{{dd}}/`.
+3. `thumbnailGeneration` — hundreds of thousands of small writes, which is SMR's
+   worst case and the slowest step.
+4. *Then* Task 12's ML (Smart Search, Face Detection), a further 1–3 days.
+
+**Check the queues are actually running once Pass 1 ends.** immich-go pauses them, so if
+the Job is killed or dies rather than exiting cleanly, they may **stay paused** and the
+library will look permanently stalled for no visible reason:
+
+```bash
+K=$(kubectl --context local-k3s get secret immich-api -n immich \
+      -o jsonpath='{.data.API_KEY}' | base64 -d)
+kubectl --context local-k3s run jobs-probe --rm -i --restart=Never -n immich \
+  --image=curlimages/curl:latest --quiet -- \
+  curl -s -H "x-api-key: $K" http://immich-server.immich.svc.cluster.local:2283/api/jobs \
+  | tr ',' '\n' | grep -iE '"[a-z]+":\{"queueStatus"|isPaused'
+```
+
+Un-pause from the admin UI (Administration → Jobs) if anything is still paused.
+
+### Related trap: `df -h /data` massively overstates the library
+
+`df` reported **553G** while the library was actually **11G**. The takeout PVC and the
+library PVC are **both** on the same `nfs-bulk` export (`192.168.5.1:/bulk-pool/k3s-bulk`),
+so `df` reports *pool* usage — 543G of which is the takeout. An operator reading 553G
+would conclude the import had already finished.
+
+The plan's Task 11 Step 8 uses `du -sh /data`, which is correct. Use `du`, not `df`:
+
+```bash
+kubectl --context local-k3s exec -n immich deploy/immich-server -- du -sh /data
+kubectl --context local-k3s exec -n immich deploy/immich-server -- du -sh /data/*
+```
+
+This is the same statfs-versus-PVC confusion recorded as Ruling 12 in the previous
+ledger, where the `ImmichLibraryVolumeFilling` alert was deliberately left measuring the
+pool. Consistent behaviour, but it surprises people twice.
+
+---
+
 ## Resume here
 
 ### Step 1 — wait for Pass 1, then check counts against the dry run
