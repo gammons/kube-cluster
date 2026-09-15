@@ -12,9 +12,12 @@ server / machine-learning / valkey come from the official Helm chart
 pinned to `v3.2.0` in `values.yml`. Everything is in the `immich` namespace except
 `alerts.yml`, which is a `PrometheusRule` in `monitoring`.
 
-> **In an emergency.** Database lost, corrupt, or being resized →
+> **In an emergency.** Database lost or corrupt →
 > [Restoring the database](#restoring-the-database--unrehearsed) (start there; it is
-> the only recovery path). Server or Postgres down → [Monitoring](#monitoring).
+> the only recovery path). Database volume being **resized** → [The `local-path`
+> volumes can never be resized](#the-local-path-volumes-can-never-be-resized)
+> instead: a resize is a destroy-and-rebuild, and the restore section documents only
+> its last step. Server or Postgres down → [Monitoring](#monitoring).
 > Library disk dead → [Backup posture](#backup-posture): it is not backed up, and
 > re-importing from Takeout is the answer.
 
@@ -43,7 +46,18 @@ when that lands.
 ## Install order
 
 Rebuild from scratch, in this order. Every command is scoped to `local-k3s`; the
-shell's default context is an unrelated production cluster.
+shell's default context is an unrelated production cluster. That applies to commands
+written into this file as much as to commands you type, so re-check it after editing:
+
+```bash
+grep -nE '(^|[[:space:]`(])(kubectl|helm|velero)[[:space:]]' immich/README.md \
+  | grep -v 'context local-k3s'
+```
+
+Expected: no output. The leading character class is the part that matters: an
+unscoped command written inline inside a backtick span in a parenthetical is exactly
+how one slipped past an earlier review of this file, and a pattern anchored straight
+to the command name does not see it.
 
 1. Namespace and the five persistent PVCs:
 
@@ -115,13 +129,14 @@ shell's default context is an unrelated production cluster.
 
    ```bash
    kubectl --context local-k3s create job -n immich --from=cronjob/immich-pgdump pgdump-manual-1
-   # Watch for BOTH outcomes. `--for=condition=complete` alone blocks for the
-   # full timeout when the Job fails, because a failed Job never gets that
-   # condition — you would learn nothing for 600s.
-   kubectl --context local-k3s wait --for=condition=failed   job/pgdump-manual-1 -n immich --timeout=600s && echo "JOB FAILED" &
-   kubectl --context local-k3s wait --for=condition=complete job/pgdump-manual-1 -n immich --timeout=600s && echo "JOB COMPLETE" &
-   wait -n; kill %1 %2 2>/dev/null
-   kubectl --context local-k3s logs -n immich job/pgdump-manual-1
+   # Stream the pod and block until it exits, whichever way it exits.
+   # `--for=condition=complete` on its own would instead block for the full
+   # timeout when the Job fails, because a failed Job never gets that condition.
+   kubectl --context local-k3s logs -f -n immich --pod-running-timeout=120s job/pgdump-manual-1
+   # The log is already on screen; this only turns the outcome into an exit code.
+   kubectl --context local-k3s wait --for=condition=complete job/pgdump-manual-1 -n immich --timeout=30s \
+     && echo "JOB COMPLETE" \
+     || { echo "JOB FAILED"; kubectl --context local-k3s get job pgdump-manual-1 -n immich -o jsonpath='{"succeeded="}{.status.succeeded}{" failed="}{.status.failed}{"\n"}'; }
    kubectl --context local-k3s delete job pgdump-manual-1 -n immich
    ```
 
@@ -443,10 +458,10 @@ spec:
 
 ```bash
 kubectl --context local-k3s apply -f /tmp/immich-dump-ls.yml
-kubectl --context local-k3s wait --for=condition=failed   job/immich-dump-ls -n immich --timeout=120s && echo "LS FAILED" &
-kubectl --context local-k3s wait --for=condition=complete job/immich-dump-ls -n immich --timeout=120s && echo "LS COMPLETE" &
-wait -n; kill %1 %2 2>/dev/null
-kubectl --context local-k3s logs -n immich job/immich-dump-ls
+kubectl --context local-k3s logs -f -n immich --pod-running-timeout=120s job/immich-dump-ls
+kubectl --context local-k3s wait --for=condition=complete job/immich-dump-ls -n immich --timeout=30s \
+  && echo "LS COMPLETE" \
+  || { echo "LS FAILED"; kubectl --context local-k3s get job immich-dump-ls -n immich -o jsonpath='{"succeeded="}{.status.succeeded}{" failed="}{.status.failed}{"\n"}'; }
 kubectl --context local-k3s delete job immich-dump-ls -n immich
 ```
 
@@ -568,29 +583,35 @@ silently broke the `pg_dump` CronJob once. Anything you run in this image must u
 ### 4. Watch it — read the output, not just the exit code
 
 The Job sets `backoffLimit: 0`, so a **failed** Job never receives the `complete`
-condition. Waiting only on `complete` would therefore block for the entire hour
-before telling you anything — during an outage. Watch for both conditions and take
-whichever arrives first:
+condition, and waiting only on `complete` would block for the entire hour before
+telling you anything — during an outage. Stream the log instead. It returns as soon
+as the pod exits either way, and it puts the failure text on screen, which is what
+you actually have to read:
 
 ```bash
-kubectl --context local-k3s wait --for=condition=failed   job/immich-restore -n immich --timeout=3600s && echo "RESTORE FAILED" &
-kubectl --context local-k3s wait --for=condition=complete job/immich-restore -n immich --timeout=3600s && echo "RESTORE COMPLETE" &
-wait -n; kill %1 %2 2>/dev/null
-kubectl --context local-k3s logs -n immich job/immich-restore
+kubectl --context local-k3s logs -f -n immich --pod-running-timeout=120s job/immich-restore
+kubectl --context local-k3s wait --for=condition=complete job/immich-restore -n immich --timeout=30s \
+  && echo "RESTORE COMPLETE" \
+  || { echo "RESTORE FAILED"; kubectl --context local-k3s get job immich-restore -n immich -o jsonpath='{"succeeded="}{.status.succeeded}{" failed="}{.status.failed}{"\n"}'; }
 ```
 
-If you would rather watch it live, this streams the restore and returns as soon as
-the pod exits either way:
-
-```bash
-kubectl --context local-k3s logs -n immich job/immich-restore -f
-```
+`logs -f` uses no job control, so it behaves identically in `bash` and `zsh` and is
+unaffected by anything you already had backgrounded — the port-forward under
+[Monitoring](#monitoring), say. **Do not "improve" this into backgrounded
+`wait --for=condition=…` calls reaped with `wait -n` and `kill %1 %2`.** That shape
+is broken: `wait -n` does not exist in zsh (it fails with `job not found: -n`), so
+execution falls straight through mid-restore with no indication anything was
+skipped; and `%1`/`%2` are absolute job numbers, so with any pre-existing background
+job they name the operator's own process and `kill` SIGTERMs it. The second command
+above only classifies the outcome, since the log has already streamed — that is why
+its timeout is 30s rather than an hour. If `logs -f` returns at once complaining the
+container `is waiting to start`, the pod simply had not started yet; run it again.
 
 Expected: `RESTORE COMPLETE`, then `restore finished` in the log.
 `--single-transaction` with `ON_ERROR_STOP=1` makes the load all-or-nothing, so a
-half-applied restore should not be possible. If it
-aborts, read the first `ERROR:` line — do not re-run blindly, and do not start the
-server against a database whose restore failed.
+half-applied restore should not be possible. If it aborts, read the first `ERROR:`
+line — do not re-run blindly, and do not start the server against a database whose
+restore failed.
 
 ### 5. Verify before scaling back up
 
