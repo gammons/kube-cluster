@@ -132,6 +132,8 @@ to the command name does not see it.
    # Stream the pod and block until it exits, whichever way it exits.
    # `--for=condition=complete` on its own would instead block for the full
    # timeout when the Job fails, because a failed Job never gets that condition.
+   # On --pod-running-timeout: see step 4 of "Restoring the database" for what this
+   # flag does not do. Do not credit it with preventing the ContainerCreating case.
    kubectl --context local-k3s logs -f -n immich --pod-running-timeout=120s job/pgdump-manual-1
    # The log is already on screen; this only turns the outcome into an exit code.
    kubectl --context local-k3s wait --for=condition=complete job/pgdump-manual-1 -n immich --timeout=30s \
@@ -480,11 +482,12 @@ spec:
 
 ```bash
 kubectl --context local-k3s apply -f /tmp/immich-dump-ls.yml
+# On --pod-running-timeout: see step 4 of "Restoring the database" for what this
+# flag does not do. Do not credit it with preventing the ContainerCreating case.
 kubectl --context local-k3s logs -f -n immich --pod-running-timeout=120s job/immich-dump-ls
 kubectl --context local-k3s wait --for=condition=complete job/immich-dump-ls -n immich --timeout=30s \
   && echo "LS COMPLETE" \
   || { echo "LS FAILED"; kubectl --context local-k3s get job immich-dump-ls -n immich -o jsonpath='{"succeeded="}{.status.succeeded}{" failed="}{.status.failed}{"\n"}'; }
-kubectl --context local-k3s delete job immich-dump-ls -n immich
 ```
 
 The listing is printed by `logs -f`, so `LS COMPLETE` arrives *after* it. **An
@@ -493,6 +496,14 @@ error out with `is waiting to start: ContainerCreating`, leaving the classifying
 `wait` to time out and print `LS FAILED` for a healthy Job. The `failed=` field is
 the tell — empty means still running, `failed=1` means a real failure — and the
 remedy is simply to re-run the `logs -f` line, which attaches once the pod is up.
+
+Only once you have read that listing, delete the Job — deleting it cascades to its
+pod, so the listing (including the sizes checked below) is unrecoverable afterwards
+and the `logs -f` remedy above stops working:
+
+```bash
+kubectl --context local-k3s delete job immich-dump-ls -n immich
+```
 
 The Job mounts `readOnly: true` because listing needs nothing more; it is a
 deliberately inert way to read the PVC while the rest of the stack is broken.
@@ -647,7 +658,8 @@ means a genuine failure. Re-run the `logs -f` line; it attaches once the pod is 
 `--pod-running-timeout` does not prevent this and must not be credited with doing
 so: if a matching pod object exists at all, `kubectl` returns it immediately
 whatever its phase and never consults the timeout, so the flag covers only the
-narrower case where the pod object does not yet exist.
+narrower case where the pod object does not yet exist — and even then it waits only
+for the pod object to appear, not to reach `Running`.
 
 Expected, in this order: `restore finished` in the log, then `RESTORE COMPLETE` —
 the log streams first and the verdict is printed after it.
