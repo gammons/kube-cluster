@@ -12,6 +12,19 @@ server / machine-learning / valkey come from the official Helm chart
 pinned to `v3.2.0` in `values.yml`. Everything is in the `immich` namespace except
 `alerts.yml`, which is a `PrometheusRule` in `monitoring`.
 
+> **In an emergency.** Database lost, corrupt, or being resized →
+> [Restoring the database](#restoring-the-database--unrehearsed) (start there; it is
+> the only recovery path). Server or Postgres down → [Monitoring](#monitoring).
+> Library disk dead → [Backup posture](#backup-posture): it is not backed up, and
+> re-importing from Takeout is the answer.
+
+Everything else: [Why not CloudNativePG](#why-not-cloudnativepg) ·
+[Install order](#install-order) · [Secrets](#secrets) ·
+[Changing configuration](#changing-configuration) ·
+[Valkey and the job queue](#valkey-and-the-job-queue) ·
+[Storage notes](#storage-notes) ·
+[Importing from Google Takeout](#importing-from-google-takeout)
+
 ## Why not CloudNativePG
 
 CNPG is deliberately **not** used here: this cluster runs Kubernetes 1.29, and the
@@ -43,9 +56,9 @@ shell's default context is an unrelated production cluster.
    correct: `local-path` is `WaitForFirstConsumer` and binds only once a pod
    mounts the claim. The `nfs` / `nfs-bulk` claims are `Immediate` and bind now.
 
-2. Postgres credentials. `secrets.yml.example` documents the shape; the real
-   Secret is created imperatively so it never enters git (`.gitignore` blocks
-   `secrets.yml`):
+2. Postgres credentials. **The imperative `create secret` below is the canonical
+   workflow** — use it. The password is generated on the spot and never touches
+   disk at all:
 
    ```bash
    PGPW=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
@@ -54,6 +67,13 @@ shell's default context is an unrelated production cluster.
      --from-literal=POSTGRES_PASSWORD="$PGPW" \
      --from-literal=POSTGRES_DB=immich
    ```
+
+   `secrets.yml.example` is the **alternative**, and is kept mainly to document
+   the Secret's shape (key names, namespace). Its own header tells you to copy it
+   to `secrets.yml`, replace the password and apply; that also keeps the real
+   value out of git (`.gitignore` blocks `secrets.yml`), but it writes a plaintext
+   password to the working tree, so prefer the imperative form unless you
+   specifically need a file to review.
 
 3. Postgres StatefulSet and its headless Service:
 
@@ -95,12 +115,18 @@ shell's default context is an unrelated production cluster.
 
    ```bash
    kubectl --context local-k3s create job -n immich --from=cronjob/immich-pgdump pgdump-manual-1
-   kubectl --context local-k3s wait --for=condition=complete job/pgdump-manual-1 -n immich --timeout=600s
+   # Watch for BOTH outcomes. `--for=condition=complete` alone blocks for the
+   # full timeout when the Job fails, because a failed Job never gets that
+   # condition — you would learn nothing for 600s.
+   kubectl --context local-k3s wait --for=condition=failed   job/pgdump-manual-1 -n immich --timeout=600s && echo "JOB FAILED" &
+   kubectl --context local-k3s wait --for=condition=complete job/pgdump-manual-1 -n immich --timeout=600s && echo "JOB COMPLETE" &
+   wait -n; kill %1 %2 2>/dev/null
    kubectl --context local-k3s logs -n immich job/pgdump-manual-1
    kubectl --context local-k3s delete job pgdump-manual-1 -n immich
    ```
 
-   Expected: a `dump size:` line well above 10240 bytes, then `done`.
+   Expected: `JOB COMPLETE`, then a `dump size:` line well above 10240 bytes,
+   then `done`.
 
 6. Prometheus alerts. `alerts.yml` declares `namespace: monitoring` in the
    manifest itself — the `PrometheusRule` must live beside Prometheus, not in
@@ -178,10 +204,12 @@ kubectl --context local-k3s exec -n immich deploy/immich-server -- cat /config/i
 
 ## Valkey and the job queue
 
-Valkey holds Immich's BullMQ job queue. It is configured with `maxmemory 0` and
-`maxmemory-policy noeviction`, so it **cannot self-evict** — it grows until the
-kernel OOM-kills it — and persistence is RDB-only (`appendonly no`), so an OOMKill
-loses up to 60 s of queue writes, i.e. queued jobs vanish mid-import.
+Valkey holds Immich's BullMQ job queue. The chart's Deployment leaves `command` and
+`args` empty, so nothing here configures valkey: it runs with the **image
+defaults**, which are `maxmemory 0` and `maxmemory-policy noeviction`. It therefore
+**cannot self-evict** — it grows until the kernel OOM-kills it — and persistence is
+RDB-only (`appendonly no`), so an OOMKill loses up to 60 s of queue writes, i.e.
+queued jobs vanish mid-import.
 
 `limits.memory` is therefore **2Gi**, a deliberate, recorded deviation from the
 512Mi in the resource table of
@@ -209,19 +237,30 @@ exist in the v3 image, and older guides that reference it are pre-v3.
 `immich-pgdump` is mounted into `immich-server` purely so Velero can see it: kopia
 can only read a PVC that a `Running` pod mounts, and the CronJob pod is
 `Succeeded` long before the 06:00 backup. The mount is `readOnly: true` so Immich
-can never write to or delete the dumps — which also means **you cannot restore
-through that mount**; the restore below mounts the PVC in its own pod.
+can never write to or delete the dumps.
+
+That is **not** why the restore below mounts the PVC in its own pod. A restore only
+*reads* the dump, so `readOnly: true` would be no obstacle at all. The restore needs
+its own pod because step 2 of that procedure scales `immich-server` to **0**, so
+there is no server pod left to `exec` into.
 
 ### The `local-path` volumes can never be resized
 
 `local-path` does not set `allowVolumeExpansion`, so it is false:
 `immich-postgres-data` (50Gi) and `immich-valkey-data` (1Gi) **cannot be grown in
-place**, ever. Growing the database volume means deleting and recreating the PVC
-and restoring from an `immich-pgdump` dump — i.e. the procedure below is also the
-disk-resize procedure. `local-path` PVs additionally use `reclaimPolicy: Delete`,
-unlike `nfs` and `nfs-bulk` which are `Retain`, so deleting one of those PVCs
-destroys the data immediately with no orphaned PV to recover from. Confirm before
-you act:
+place**, ever. Growing the database volume is a destroy-and-rebuild: take a fresh
+dump, scale the StatefulSet to 0 so the pod releases the claim, edit the size in
+`pvc.yml`, delete the PVC (the data is gone at this point — see `reclaimPolicy`
+below), re-apply `pvc.yml`, scale the StatefulSet back to 1 so `WaitForFirstConsumer`
+binds a new empty volume, and only then load the dump back in. **Only that last step
+is documented below** — ["Restoring the database"](#restoring-the-database--unrehearsed)
+covers dump → `psql` and nothing else. The PVC surgery is not written up anywhere and
+must be worked out at the time. Note the PVC is a standalone object referenced by
+`claimName` (`postgres.yml`), not a `volumeClaimTemplates` entry, so it is deleted and
+recreated independently of the StatefulSet. `local-path` PVs additionally use
+`reclaimPolicy: Delete`, unlike `nfs` and `nfs-bulk` which are `Retain`, so deleting
+one of those PVCs destroys the data immediately with no orphaned PV to recover from.
+Confirm before you act:
 
 ```bash
 kubectl --context local-k3s get sc -o custom-columns='NAME:.metadata.name,EXPAND:.allowVolumeExpansion,RECLAIM:.reclaimPolicy,BINDING:.volumeBindingMode'
@@ -346,19 +385,85 @@ and stays silent forever).
 
 ### 1. Find a dump
 
-They live on the `immich-pgdump` PVC and are visible read-only inside the server
-pod, which is the cheapest place to look while it is still up:
+They live on the `immich-pgdump` PVC. If `immich-server` is still `Running`, the
+dumps are visible read-only inside it and that is the cheapest place to look:
 
 ```bash
 kubectl --context local-k3s exec -n immich deploy/immich-server -- ls -la /dumps
 ```
 
+**If that fails, use the throwaway Job below instead.** Do not treat the `exec` as
+the only way in: the most common trigger for this whole procedure is a lost or
+corrupt `immich-postgres-data`, and in that state `immich-server` is in
+`CrashLoopBackOff` — so the `exec` above fails precisely when you need it most. This
+Job mounts the PVC directly and depends on nothing but the PVC itself. Save it as
+`/tmp/immich-dump-ls.yml`:
+
+```yaml
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: immich-dump-ls
+  namespace: immich
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      annotations:
+        # Same reasoning as the restore Job below: a short-lived pod must not
+        # drag the 20Gi dumps PVC through a PodVolumeBackup if a scheduled
+        # backup overlaps it.
+        backup.velero.io/backup-volumes-excludes: dumps
+    spec:
+      restartPolicy: Never
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+      containers:
+        - name: ls
+          image: ghcr.io/immich-app/postgres:17-vectorchord1.1.1
+          command:
+            # bash, NOT sh — see the note under the restore Job below.
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              ls -la /dumps
+          volumeMounts:
+            - name: dumps
+              mountPath: /dumps
+              readOnly: true
+      volumes:
+        - name: dumps
+          persistentVolumeClaim:
+            claimName: immich-pgdump
+```
+
+```bash
+kubectl --context local-k3s apply -f /tmp/immich-dump-ls.yml
+kubectl --context local-k3s wait --for=condition=failed   job/immich-dump-ls -n immich --timeout=120s && echo "LS FAILED" &
+kubectl --context local-k3s wait --for=condition=complete job/immich-dump-ls -n immich --timeout=120s && echo "LS COMPLETE" &
+wait -n; kill %1 %2 2>/dev/null
+kubectl --context local-k3s logs -n immich job/immich-dump-ls
+kubectl --context local-k3s delete job immich-dump-ls -n immich
+```
+
+The Job mounts `readOnly: true` because listing needs nothing more; it is a
+deliberately inert way to read the PVC while the rest of the stack is broken.
+
 Names are `immich-YYYYMMDD-HHMMSS.sql.gz`, 14 days are retained, and anything
 under ~10 KiB should not exist (the CronJob fails rather than writing one) — but
-check the size anyway. If the PVC itself is gone, restore it from Velero first
-(`velero restore create --from-backup <name> --include-namespaces immich`) and note
-that Velero only restores the *file*: nothing loads it into Postgres. That is what
-the rest of this procedure does.
+check the size anyway. If the PVC itself is gone, restore it from Velero first, then
+run the listing Job above:
+
+```bash
+velero --kubecontext local-k3s restore create --from-backup <name> --include-namespaces immich
+```
+
+Note that Velero only restores the *file*: nothing loads it into Postgres. That is
+what the rest of this procedure does.
 
 ### 2. Stop everything that writes
 
@@ -389,8 +494,12 @@ spec:
   template:
     metadata:
       annotations:
-        # The dumps volume is already captured via immich-server, so a second
-        # PodVolumeBackup is pure waste if a scheduled backup overlaps this Job.
+        # Keep this Job out of any scheduled backup that overlaps it. Note it
+        # is NOT "already captured via immich-server" — step 2 scaled that to 0,
+        # so right now nothing is backing this volume up. The exclusion is still
+        # correct: this pod lives for minutes during an outage, and letting it
+        # become the mount point that drags 20Gi through kopia would slow the
+        # restore without protecting anything the 04:00 dump cycle won't.
         backup.velero.io/backup-volumes-excludes: dumps
     spec:
       restartPolicy: Never
@@ -458,13 +567,28 @@ silently broke the `pg_dump` CronJob once. Anything you run in this image must u
 
 ### 4. Watch it — read the output, not just the exit code
 
+The Job sets `backoffLimit: 0`, so a **failed** Job never receives the `complete`
+condition. Waiting only on `complete` would therefore block for the entire hour
+before telling you anything — during an outage. Watch for both conditions and take
+whichever arrives first:
+
 ```bash
-kubectl --context local-k3s wait --for=condition=complete job/immich-restore -n immich --timeout=3600s
+kubectl --context local-k3s wait --for=condition=failed   job/immich-restore -n immich --timeout=3600s && echo "RESTORE FAILED" &
+kubectl --context local-k3s wait --for=condition=complete job/immich-restore -n immich --timeout=3600s && echo "RESTORE COMPLETE" &
+wait -n; kill %1 %2 2>/dev/null
 kubectl --context local-k3s logs -n immich job/immich-restore
 ```
 
-Expected: `restore finished`. `--single-transaction` with `ON_ERROR_STOP=1` makes
-the load all-or-nothing, so a half-applied restore should not be possible. If it
+If you would rather watch it live, this streams the restore and returns as soon as
+the pod exits either way:
+
+```bash
+kubectl --context local-k3s logs -n immich job/immich-restore -f
+```
+
+Expected: `RESTORE COMPLETE`, then `restore finished` in the log.
+`--single-transaction` with `ON_ERROR_STOP=1` makes the load all-or-nothing, so a
+half-applied restore should not be possible. If it
 aborts, read the first `ERROR:` line — do not re-run blindly, and do not start the
 server against a database whose restore failed.
 
