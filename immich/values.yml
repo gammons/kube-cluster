@@ -42,7 +42,7 @@ immich:
       hashVerificationEnabled: true
       template: "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"
     machineLearning:
-      # Disabled for the bulk import; re-enabled in Task 11.
+      # Disabled for the bulk import; re-enabled in Task 12.
       # All four default to true in v3.2.0's config.dto.js. ocr in particular
       # runs CPU-only inference on every asset, and there is no GPU here.
       clip:

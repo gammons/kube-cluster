@@ -18,7 +18,7 @@ spec:
             severity: critical
           annotations:
             summary: "Immich server is down"
-            description: "The Immich server has been unreachable for 10 minutes. Check `kubectl -n immich get pods`."
+            description: "The Immich server has been unreachable for 10 minutes. Check `kubectl --context local-k3s -n immich get pods`."
 
         - alert: ImmichPostgresDown
           expr: kube_statefulset_status_replicas_ready{namespace="immich", statefulset="immich-postgres"} < 1
@@ -37,7 +37,7 @@ spec:
             severity: warning
           annotations:
             summary: "Immich pg_dump has not succeeded in 48h"
-            description: "The nightly database dump is the only recovery path for Immich's database. Check `kubectl -n immich get jobs`."
+            description: "The nightly database dump is the only recovery path for Immich's database. Check `kubectl --context local-k3s -n immich get jobs`."
 
         # Companion to ImmichPgDumpFailed above. That alert compares against
         # kube_cronjob_status_last_successful_time, so when the series is ABSENT

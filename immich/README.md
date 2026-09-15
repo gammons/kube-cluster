@@ -47,14 +47,21 @@ when that lands.
 
 Rebuild from scratch, in this order. Every command is scoped to `local-k3s`; the
 shell's default context is an unrelated production cluster. That applies to commands
-written into this file as much as to commands you type, so re-check it after editing:
+written into any file under `immich/` as much as to commands you type, so re-check
+it after editing:
 
 ```bash
-grep -nE '(^|[[:space:]`(])(kubectl|helm|velero)[[:space:]]' immich/README.md \
+grep -rnE '(^|[[:space:]`(])(kubectl|helm|velero)[[:space:]]' immich/ \
   | grep -v 'context local-k3s'
 ```
 
-Expected: no output. The leading character class is the part that matters: an
+Expected: exactly one line — the `Do NOT \`kubectl apply -f\` it wholesale`
+prohibition in `import/immich-go-job.yml`, which names a command you are being told
+*not* to run. Scope that one too and the expected output becomes empty; anything
+else the sweep prints is new drift. It scans the whole directory, not just this
+README: the unscoped `kubectl` commands that sat in `alerts.yml`'s alert
+*descriptions* — the first thing a paged operator reads — were invisible to a
+README-only sweep. The leading character class is the part that matters: an
 unscoped command written inline inside a backtick span in a parenthetical is exactly
 how one slipped past an earlier review of this file, and a pattern anchored straight
 to the command name does not see it.
@@ -151,11 +158,17 @@ to the command name does not see it.
    out after 30s and prints `JOB FAILED` for a perfectly healthy run. The `failed=`
    field the diagnostic branch prints is the tell — **empty means still running**,
    `failed=1` means a genuine failure. The remedy is to re-run the `logs -f` line,
-   which attaches once the pod is up. Note also that this Job comes from
-   `pgdump-cronjob.yml`, which sets `backoffLimit: 2`, so it gets up to three pod
-   attempts; `logs -f` follows only one of them, so a first-attempt failure can
-   likewise expire the 30s `wait` mid-backoff on a Job that still goes on to
-   succeed. Both errors are in the safe direction — a false alarm, never a false
+   which attaches once the pod is up. (An empty `failed=` cannot by itself
+   distinguish "starting" from "can never start" — if re-running `logs -f` does not
+   attach, check the pod's phase as described in
+   [step 1 of "Restoring the database"](#1-find-a-dump).) Note also that this Job
+   comes from `pgdump-cronjob.yml`, which sets `backoffLimit: 2` alongside
+   `restartPolicy: OnFailure`, so the backoff retries the **container inside a
+   single pod** rather than creating new pods — `get pods` shows one pod with a
+   rising `RESTARTS` count, up to three container attempts in total. `logs -f`
+   follows only one attempt, so a first-attempt failure can likewise expire the 30s
+   `wait` mid-backoff on a Job that still goes on to succeed. Both errors are in the
+   safe direction — a false alarm, never a false
    all-clear — so re-read the log rather than acting on the verdict.
 
    Only once you have read that output, delete the Job — the `dump size:` line
@@ -278,8 +291,8 @@ can never write to or delete the dumps.
 
 That is **not** why the restore below mounts the PVC in its own pod. A restore only
 *reads* the dump, so `readOnly: true` would be no obstacle at all. The restore needs
-its own pod because step 2 of that procedure scales `immich-server` to **0**, so
-there is no server pod left to `exec` into.
+its own pod because [step 2 of that procedure](#2-stop-everything-that-writes)
+scales `immich-server` to **0**, so there is no server pod left to `exec` into.
 
 ### The `local-path` volumes can never be resized
 
@@ -480,6 +493,27 @@ spec:
             claimName: immich-pgdump
 ```
 
+**Confirm the PVC exists before you apply that Job.** It mounts `immich-pgdump`,
+and the trigger for this procedure is often storage loss — if the claim is gone the
+Job's pod is created but can never be scheduled, and every check below reports a
+misleading failure:
+
+```bash
+kubectl --context local-k3s get pvc immich-pgdump -n immich
+```
+
+Expected: `Bound`. If the PVC itself is gone, restore it from Velero first, and only
+then apply the listing Job:
+
+```bash
+velero --kubecontext local-k3s restore create --from-backup <name> --include-namespaces immich
+```
+
+Note that Velero only restores the *file*: nothing loads it into Postgres. That is
+what the rest of this procedure does.
+
+With the PVC `Bound`, run the listing Job:
+
 ```bash
 kubectl --context local-k3s apply -f /tmp/immich-dump-ls.yml
 # On --pod-running-timeout: see step 4 of "Restoring the database" for what this
@@ -494,8 +528,27 @@ The listing is printed by `logs -f`, so `LS COMPLETE` arrives *after* it. **An
 `LS FAILED` here can be false:** `logs -f` follows the `apply` by one line and may
 error out with `is waiting to start: ContainerCreating`, leaving the classifying
 `wait` to time out and print `LS FAILED` for a healthy Job. The `failed=` field is
-the tell — empty means still running, `failed=1` means a real failure — and the
-remedy is simply to re-run the `logs -f` line, which attaches once the pod is up.
+the first tell — `failed=1` means a real failure — but an **empty** `failed=` is
+ambiguous on its own: nothing has failed yet, which is equally true of a pod that is
+starting and of a pod that can never start. Resolve it by looking at the pod:
+
+```bash
+kubectl --context local-k3s get pods -n immich -l job-name=immich-dump-ls
+```
+
+- `ContainerCreating` (or `Running`) — the Job is genuinely starting. Re-run the
+  `logs -f` line; it attaches once the pod is up.
+- `Pending` — the pod cannot be scheduled and re-running `logs -f` will never
+  attach, however long you wait. Read the reason:
+
+  ```bash
+  kubectl --context local-k3s describe pod -n immich -l job-name=immich-dump-ls
+  ```
+
+  A `FailedScheduling` event naming
+  `persistentvolumeclaim "immich-pgdump" not found` means the PVC check above was
+  skipped or has regressed. Delete this Job, restore the PVC from Velero as
+  described above, and start again — there is nothing to wait for.
 
 Only once you have read that listing, delete the Job — deleting it cascades to its
 pod, so the listing (including the sizes checked below) is unrecoverable afterwards
@@ -510,15 +563,7 @@ deliberately inert way to read the PVC while the rest of the stack is broken.
 
 Names are `immich-YYYYMMDD-HHMMSS.sql.gz`, 14 days are retained, and anything
 under ~10 KiB should not exist (the CronJob fails rather than writing one) — but
-check the size anyway. If the PVC itself is gone, restore it from Velero first, then
-run the listing Job above:
-
-```bash
-velero --kubecontext local-k3s restore create --from-backup <name> --include-namespaces immich
-```
-
-Note that Velero only restores the *file*: nothing loads it into Postgres. That is
-what the rest of this procedure does.
+check the size anyway.
 
 ### 2. Stop everything that writes
 
@@ -530,6 +575,29 @@ scale-down is sufficient. Machine-learning holds no database credentials
 kubectl --context local-k3s scale deploy immich-server -n immich --replicas=0
 kubectl --context local-k3s rollout status deploy/immich-server -n immich --timeout=300s
 ```
+
+**Then confirm Postgres is actually up, before step 3 connects to it.** That
+rollout status covers `immich-server` only, and the trigger for this whole procedure
+is usually a lost or corrupt `immich-postgres-data` — in which case
+`immich-postgres-0` is `Pending` or crash-looping and the restore Job dies on a TCP
+connection error. That failure mode is *not* covered by the "read the first
+`ERROR:` line" advice in step 4: a refused connection never produces a `psql`
+`ERROR:` line at all.
+
+```bash
+kubectl --context local-k3s rollout status statefulset/immich-postgres -n immich --timeout=300s
+kubectl --context local-k3s exec -n immich immich-postgres-0 -- pg_isready -U immich -d immich
+```
+
+Expected: one ready replica, and `accepting connections` from `pg_isready`. **If
+either fails, stop — do not apply the restore Job.** There is nothing to restore
+*into* yet, and the Job will only obscure the real fault. Bring Postgres back first:
+if its PVC is the thing that was lost, recreating it is the enumerated sequence in
+[The `local-path` volumes can never be
+resized](#the-local-path-volumes-can-never-be-resized) — bearing in mind, as that
+section says, that the enumeration is a sequence of steps rather than a rehearsed
+runbook with per-step commands, so expect to work out the exact invocations at the
+time. Return here once `pg_isready` answers.
 
 ### 3. Run the restore Job
 
@@ -623,8 +691,9 @@ silently broke the `pg_dump` CronJob once. Anything you run in this image must u
 ### 4. Watch it — read the output, not just the exit code
 
 This Job sets `backoffLimit: 0` — as does `immich-dump-ls`; both are embedded in
-this file. (That is **not** true of the manual pgdump test in step 5 of "Install
-order", which is created from `pgdump-cronjob.yml` and inherits its
+this file. (That is **not** true of the manual pgdump test in
+[step 5 of "Install order"](#install-order), which is created from
+`pgdump-cronjob.yml` and inherits its
 `backoffLimit: 2`.) With no retries a **failed** Job never receives the `complete`
 condition, and waiting only on `complete` would block for the entire hour before
 telling you anything — during an outage. Stream the log instead. It returns as soon
@@ -655,6 +724,9 @@ verdict** — the pod simply had not started, and the 30s `wait` expired against
 restore that may legitimately run for an hour. The `failed=` field the diagnostic
 branch prints is the tell: **empty means the restore is still running**, `failed=1`
 means a genuine failure. Re-run the `logs -f` line; it attaches once the pod is up.
+(As in [step 1](#1-find-a-dump), an empty `failed=` cannot on its own distinguish a
+pod that is starting from one that can never start — if `logs -f` still does not
+attach, check the pod's phase the same way, substituting `job-name=immich-restore`.)
 `--pod-running-timeout` does not prevent this and must not be credited with doing
 so: if a matching pod object exists at all, `kubectl` returns it immediately
 whatever its phase and never consults the timeout, so the flag covers only the
