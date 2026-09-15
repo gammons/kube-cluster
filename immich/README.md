@@ -55,10 +55,8 @@ grep -rnE '(^|[[:space:]`(])(kubectl|helm|velero)[[:space:]]' immich/ \
   | grep -v 'context local-k3s'
 ```
 
-Expected: exactly one line — the `Do NOT \`kubectl apply -f\` it wholesale`
-prohibition in `import/immich-go-job.yml`, which names a command you are being told
-*not* to run. Scope that one too and the expected output becomes empty; anything
-else the sweep prints is new drift. It scans the whole directory, not just this
+Expected: **empty**. Anything the sweep prints is new drift. It scans the whole
+directory, not just this
 README: the unscoped `kubectl` commands that sat in `alerts.yml`'s alert
 *descriptions* — the first thing a paged operator reads — were invisible to a
 README-only sweep. The leading character class is the part that matters: an

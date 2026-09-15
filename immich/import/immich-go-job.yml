@@ -6,7 +6,8 @@
 #   outside the zips because it exceeds the 10 GB split size, re-paired with the
 #   sidecar JSON that *is* inside chunk 035.
 #
-# This file holds both Jobs. Do NOT `kubectl apply -f` it wholesale — select one
+# This file holds both Jobs. Do NOT `kubectl --context local-k3s apply -f` it
+# wholesale — select one
 # Job at a time with the helper in Task 11 of the plan.
 #
 # immich-go ships release binaries only. There is no official container image;
