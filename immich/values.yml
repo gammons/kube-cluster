@@ -82,13 +82,29 @@ valkey:
         main:
           # Without these valkey is BestEffort QoS, making it the first pod
           # evicted under node pressure — and it holds the Immich job queue.
+          # Requests stay at 256Mi so QoS stays Burstable and scheduling is
+          # unchanged; only the ceiling moves. That 2Gi ceiling is a deliberate
+          # deviation from the resource table in
+          # docs/superpowers/specs/2026-09-12-immich-homelab-design.md, which
+          # specifies 512Mi. valkey runs maxmemory 0 with maxmemory-policy
+          # noeviction, so it cannot self-evict — it grows until the kernel
+          # OOM-kills it. Persistence is RDB-only (appendonly no), so an
+          # OOMKill loses up to 60s of queue writes, meaning queued BullMQ jobs
+          # vanish mid-import. An eviction policy is not the alternative here:
+          # BullMQ requires noeviction, and allkeys-lru would silently evict
+          # queue entries and corrupt queue state — worse than a visible
+          # OOMKill. More memory is the only correct fix. Sizing: ~200k assets,
+          # and immich-go's --pause-immich-jobs (default true) means metadata
+          # and thumbnail jobs accumulate unprocessed in the waiting list —
+          # ~400k jobs × ~400B ≈ 160MB raw, ≈ 320MB+ with Redis overhead. 512Mi
+          # leaves too little margin for a multi-hour unattended import.
           resources:
             requests:
               cpu: 100m
               memory: 256Mi
             limits:
               cpu: "1"
-              memory: 512Mi
+              memory: 2Gi
   persistence:
     data:
       enabled: true
