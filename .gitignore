@@ -2,3 +2,6 @@
 
 *.tfstate
 *.tfstate.*
+
+# superpowers SDD scratch (briefs, reports, review packages, progress ledger)
+.superpowers/
