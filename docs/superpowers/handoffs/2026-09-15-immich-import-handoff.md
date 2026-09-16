@@ -11,7 +11,72 @@ before it is lost to a `git clean`).
 
 ---
 
-## TL;DR
+## UPDATE 2026-09-16 00:40Z — run 1 FAILED at 82%, run 2 launched
+
+**Read this before the TL;DR below, which describes run 1 while it was still healthy.**
+
+Pass 1 (`immich-go-import-zips`) **died at 19:22:45Z with exit code 1**, having imported
+**98,459 of 119,624 assets (82.3%)** and 457 albums. `backoffLimit: 0`, so the Job did not
+retry — condition `BackoffLimitExceeded`. **~21,165 assets were never uploaded.**
+
+**The cause could not be determined**, and that is a process failure worth naming:
+immich-go's stdout ends mid-write with no error and no summary, and its detailed ~95 MB
+internal log lived in the container's writable layer, so it died with the pod — a
+terminated container cannot be `exec`ed into. Its own counter showed upload errors jumping
+70 → **481** shortly before the end. Server-side `RangeError [ERR_OUT_OF_RANGE] ...
+Received -610950` entries exist but are in `MetadataService`/`MediaService` *background*
+jobs that only began after the queues resumed, so they are a consequence of the exit
+rather than obviously its cause.
+
+**Good news — the post-import pipeline auto-started.** immich-go un-paused the queues on
+its way out, so at 00:00Z:
+
+| Queue | State | Waiting |
+|---|---|---|
+| `metadataExtraction` | drained | 0 |
+| `thumbnailGeneration` | active | 63,574 |
+| `storageTemplateMigration` | active | 17,897 |
+
+`/data/thumbs` is **4.1 GB** with **11,132 thumbnails + 11,132 previews + 1,218 encoded
+videos** generated. Thumbnails are appearing in the UI progressively.
+
+### Two changes made in response
+
+**1. Liveness probe loosened (`ffb09bf`).** The chart default was `timeoutSeconds: 1`,
+`failureThreshold: 3`, `periodSeconds: 10` — 30 s of slow responses killed the container,
+and it killed `immich-server` **four times** during run 1 (exit 143, "Liveness probe
+failed: context deadline exceeded"), each time dropping the uploads in flight. A Node.js
+event loop servicing concurrent uploads, hashing and DB writes cannot reliably answer
+`/api/server/ping` within one second. Now `timeoutSeconds: 10`, `failureThreshold: 5`,
+`periodSeconds: 30` — a kill requires ~150 s of genuine unresponsiveness. Verified live on
+the new pod. `startupProbe` deliberately left alone (already 30 × 10 s).
+
+**2. Run 2 launched: Job `immich-go-import-zips-2`** (manifest at
+`.superpowers/sdd/scratch/pass1-rerun.yml`, transient so not committed to `import/`).
+Differences from run 1:
+
+- `--concurrent-tasks=2` instead of 4 — less server contention, fewer FK races.
+- **immich-go's log now survives the pod.** The takeout PVC is mounted a second time at
+  `/importlogs` via `subPath: _importlogs`, read-write, while `/takeout` itself stays
+  **read-only** so the archives can never be altered. The script probes
+  `--help` for a `--log-file` flag and uses it if present — it is
+  (`-l, --log-file`), so the log writes straight to
+  `/importlogs/run2-<stamp>-native.log` on NFS. An `EXIT`/`INT`/`TERM` trap plus a
+  20-minute periodic copy back it up for the SIGKILL case no trap can catch.
+- No `set -e`, so the job survives its own failure long enough to preserve evidence.
+
+**immich-go dedupes by content hash**, so run 2 skips the 98,459 already imported and
+uploads only the missing ~21,165. Expect a **long lead time** — it must re-read and
+re-hash all 552 GiB before it reaches new work. `--pause-immich-jobs` (default true) will
+re-pause the thumbnail queue for the duration and release it afterwards, which restores
+the intended import-then-derive ordering with no manual queue juggling.
+
+**If run 2 fails at the same point, that is diagnostic** — and this time the log will be
+on the PVC at `/importlogs/`, readable from any pod that mounts `immich-takeout`.
+
+---
+
+## TL;DR (run 1, superseded by the update above)
 
 **Pass 1 of the import is RUNNING right now** and healthy. All three pre-import gates
 passed. It has roughly **10 hours** left. Nothing needs doing until it finishes.
