@@ -165,6 +165,27 @@ server:
             limits:
               cpu: "4"
               memory: 6Gi
+          # The chart defaults these to timeoutSeconds: 1 / failureThreshold: 3
+          # / periodSeconds: 10, so 30s of slow responses kills the container.
+          # During the Takeout import that killed immich-server four times
+          # (exit 143, "Liveness probe failed: context deadline exceeded") —
+          # a Node.js event loop servicing concurrent uploads, hashing and DB
+          # writes cannot reliably answer /api/server/ping inside one second.
+          # Each kill dropped the uploads in flight at that moment.
+          # 5 failures x 30s at a 10s timeout means a kill now needs ~150s of
+          # genuine unresponsiveness, which is a real hang rather than load.
+          # startupProbe is left alone: it already allows 30 x 10s.
+          probes:
+            liveness:
+              spec:
+                timeoutSeconds: 10
+                failureThreshold: 5
+                periodSeconds: 30
+            readiness:
+              spec:
+                timeoutSeconds: 10
+                failureThreshold: 5
+                periodSeconds: 30
 
 machine-learning:
   controllers:
