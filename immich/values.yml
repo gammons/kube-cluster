@@ -42,17 +42,30 @@ immich:
       hashVerificationEnabled: true
       template: "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"
     machineLearning:
-      # Disabled for the bulk import; re-enabled in Task 12.
-      # All four default to true in v3.2.0's config.dto.js. ocr in particular
-      # runs CPU-only inference on every asset, and there is no GPU here.
+      # Enabled 2026-09-17, after the bulk import and thumbnail generation
+      # completed. These were off during the import so CPU-only inference did
+      # not compete with ingest on a GPU-less cluster.
+      #
+      # ocr stays OFF deliberately — it is not an oversight. It is a separate
+      # inference pass over every asset, and text-in-image search is the ML
+      # output most people never use. Turn it on only after Smart Search and
+      # Face Detection have fully drained, and only if you actually want it.
+      #
+      # duplicateDetection is cheap once CLIP embeddings exist because it
+      # reuses them, so it goes on with clip rather than separately.
+      #
+      # These are READ-ONLY in the admin UI because IMMICH_CONFIG_FILE is set.
+      # Change them here, `helm upgrade`, then `rollout restart deploy/immich-server`
+      # — the chart puts no config checksum on the pod template, so the upgrade
+      # alone updates the ConfigMap while the process keeps the old values.
       clip:
-        enabled: false
+        enabled: true
       facialRecognition:
-        enabled: false
+        enabled: true
       ocr:
         enabled: false
       duplicateDetection:
-        enabled: false
+        enabled: true
     backup:
       database:
         # Default true: writes a nightly pg_dump at 02:00 into /data/backups,
