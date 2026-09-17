@@ -511,17 +511,32 @@ Everything in `2026-09-14-immich-import-handoff.md` "Traps" remains true. New th
 > `.superpowers/sdd/progress.md` if it still exists — it is the git-ignored decision log
 > for the previous session and contains rulings 18–20.
 >
-> Pass 1 of the import was launched at 02:53Z on 2026-09-15 as job
-> `immich-go-import-zips` and should now be finished. Start by checking whether it
-> completed and comparing the final asset and album counts against the dry-run benchmark
-> of 119,624 media and 74 albums, which is in the handoff. Then continue from "Resume
-> here" Step 2 (Pass 2, the standalone MP4).
+> The bulk import is **done**: 104,054 assets and 459 albums are in Immich, with capture
+> dates, GPS, album membership and Google people-tags preserved. immich-go ran twice
+> (`immich-go-import-zips`, `immich-go-import-zips-2`); both **completed normally** and
+> exited 1 only because errors occurred during the run, which is standard behaviour with
+> `--on-errors=continue`. Neither crashed. The album worry from an earlier draft resolved
+> itself — all albums landed.
 >
-> Pay particular attention to the album count: Pass 1 was throwing `failed to create
-> album` 500s caused by an Immich v3.2.0 foreign-key race on `stack_primaryAssetId_fkey`,
-> and albums are the one affected category that is real metadata loss rather than cosmetic.
-> The handoff describes a candidate repair — a second idempotent immich-go pass — which
-> must be tested on a single chunk before being run over all 53.
+> Two import items are deliberately closed: **Pass 2 is CANCELLED** (the standalone 19.5 GB
+> MP4 is an unwanted accidental recording, verified never imported), and the apparent
+> "15,570 missing assets" was mostly legitimate deduplication, not loss.
+>
+> **The one real remaining gap is 3,912 sidecar-less files** that immich-go left as
+> "Pending: did not reach a final state". They have no Google JSON sidecar, so
+> `from-google-photos` — which is sidecar-driven — can never import them, which is why
+> re-running reproduced the same result. They need extracting from the zips and importing
+> with `upload from-folder --date-from-name`. That loses nothing for these specific files,
+> because there is no sidecar to lose metadata from. Verify first whether any of them
+> already carry usable EXIF.
+>
+> Then: Task 12 (re-enable `clip`, `facialRecognition` and `duplicateDetection`, leaving
+> `ocr` deliberately false), and finally delete the takeout PVC. Remember `helm upgrade`
+> does **not** restart `immich-server` — always follow with `rollout restart`.
+>
+> Thumbnail generation was draining overnight and should be complete; confirm with the
+> "assets lacking a thumbnail" query in the handoff rather than the jobs API, whose
+> `waiting` counter over-reports by roughly 11,000 redundant jobs.
 >
 > Every kubectl/helm/velero command must be scoped to `local-k3s` (note the three
 > different flag spellings). Another agent session may be committing to this repo, so
