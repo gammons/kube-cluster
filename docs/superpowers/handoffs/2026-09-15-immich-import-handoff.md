@@ -90,7 +90,7 @@ passed. It has roughly **10 hours** left. Nothing needs doing until it finishes.
 | Task 9 (README runbook) | **complete** — 61 → ~765 lines, 4 review rounds |
 | Task 11 Pass 1 dry run | **PASSED** — 119,624 media, 74 albums, 0 errors |
 | **Task 11 Pass 1 real run** | **RUNNING** — job `immich-go-import-zips` |
-| Task 11 Pass 2 (standalone MP4) | not started — **gated on Pass 1** |
+| Task 11 Pass 2 (standalone MP4) | **CANCELLED** — unwanted accidental recording, never imported |
 | Task 12 (re-enable ML) | not started — 1–3 days of CPU inference |
 | Final whole-branch review | **done — "Ready to merge"** |
 
@@ -307,7 +307,25 @@ The dry run is the benchmark, and it is a good one — it enumerated the same 53
 If it shows `1/1` it completed; if the pod is `Error`, read the log — do **not** blindly
 re-run.
 
-### Step 2 — Pass 2, the standalone MP4
+### Step 2 — ~~Pass 2, the standalone MP4~~ **CANCELLED 2026-09-16**
+
+> **DO NOT RUN PASS 2.** The human partner identified
+> `PXL_20250517_140916476-036.mp4` as an **accidental recording made while running**, and
+> does not want it in the library. Verified it was never imported:
+> `SELECT ... FROM asset WHERE "originalFileName" ILIKE 'PXL_20250517_140916476%'`
+> returns **0 rows** — Pass 1's `/takeout/*.zip` glob could never match an `.mp4`. For
+> contrast, 488 other `PXL_2025*` videos imported fine, so this was specific to that file
+> rather than a video-handling problem.
+>
+> Nothing to delete from Immich. The 19.5 GB file and its orphaned sidecar in chunk 035
+> simply go away when the takeout PVC is deleted. Deleting it early is optional and low
+> value — `bulk-pool` has ~6.3 TB free.
+>
+> The original procedure is kept below only because the staged-folder + hardlink technique
+> is the correct pattern if a similar oversized standalone file ever appears in a future
+> Takeout export.
+
+#### (retained for reference only — not to be run)
 
 Only after Pass 1 completes. `immich/import/immich-go-job.yml` holds both Jobs; apply
 **one at a time**.
