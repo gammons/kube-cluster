@@ -150,6 +150,13 @@ server:
   controllers:
     main:
       pod:
+        # Pinned to node-1 for the same reason as machine-learning: node-3 is
+        # at 90% memory from non-immich workloads and must stay reserved for
+        # immich-postgres, which cannot move. Left unpinned, the scheduler put
+        # this pod on node-3 on its next rollout, where its ~4Gi working set
+        # would have risked the node OOM-killer taking Postgres with it.
+        nodeSelector:
+          kubernetes.io/hostname: k3s-node-1
         annotations:
           backup.velero.io/backup-volumes-excludes: data
       containers:
@@ -158,6 +165,15 @@ server:
           # files and has no Postgres client library, so it must not hold
           # these credentials. Valkey never uses them either.
           env:
+            # V8 sizes its old-space heap from *detected system memory* and
+            # does not read the cgroup limit, so on an 11.7Gi node it happily
+            # grows past the 6Gi container limit and gets OOM-killed instead
+            # of collecting. Enabling ML made this fire every ~30 min
+            # (exit 137, plus a node-level SystemOOM naming immich as victim).
+            # Bounding old-space at 3Gi makes V8 GC on its own well before the
+            # cgroup limit. Non-heap allocations (sharp, native buffers) sit
+            # outside this figure, which is why it is 3Gi and not 6Gi.
+            NODE_OPTIONS: "--max-old-space-size=3072"
             DB_HOSTNAME: immich-postgres.immich.svc.cluster.local
             DB_PORT: "5432"
             DB_DATABASE_NAME: immich
@@ -204,6 +220,20 @@ machine-learning:
   controllers:
     main:
       pod:
+        # Pinned to node-1, with immich-server. Measured, not assumed:
+        #   node-1  9% CPU, 38% memory (4.5Gi used of 11.7Gi)
+        #   node-3 62% CPU, 90% memory (10.8Gi used) - ~8Gi of it NON-immich
+        # node-3 is the loaded node and must stay reserved for immich-postgres,
+        # which is pinned there by its local-path PV and cannot move. Putting
+        # ML (4 CPU) or the server (up to 4Gi) there risks the node OOM-killer
+        # taking Postgres, which is a far worse failure than the one this is
+        # fixing. node-1 has 8 CPUs at 9% and ~7Gi free, so it absorbs both.
+        # The real fix for the OOM was bounding V8's heap (NODE_OPTIONS on the
+        # server), not separating the pods - co-location was never the cause.
+        # Safe to move: immich-ml-cache is RWX on the nfs class, not node-local.
+        # ANDs with the defaultPodOptions nodeAffinity that excludes node-2.
+        nodeSelector:
+          kubernetes.io/hostname: k3s-node-1
         annotations:
           backup.velero.io/backup-volumes-excludes: cache
       containers:
