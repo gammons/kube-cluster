@@ -55,7 +55,7 @@ immich:
       # reuses them, so it goes on with clip rather than separately.
       #
       # These are READ-ONLY in the admin UI because IMMICH_CONFIG_FILE is set.
-      # Change them here, `helm upgrade`, then `rollout restart deploy/immich-server`
+      # Change them here, upgrade the release, then restart immich-server
       # — the chart puts no config checksum on the pod template, so the upgrade
       # alone updates the ConfigMap while the process keeps the old values.
       clip:
