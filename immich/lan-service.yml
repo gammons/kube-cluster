@@ -1,0 +1,46 @@
+---
+# LAN access for the Immich mobile app, so a phone on the house WiFi can browse
+# and back up without Tailscale installed. Tailscale access is unaffected and
+# remains the only way in from outside the house.
+#
+# This is deliberately a SEPARATE Service rather than `server.service.lan` in
+# values.yml. Adding it through the chart renames the chart's own Service from
+# `immich-server` to `immich-server-main` (verified by rendering 0.13.2). That
+# name is what the Tailscale operator's proxy tracks, and what every in-cluster
+# reference to immich-server.immich.svc.cluster.local resolves - the import
+# Jobs, the PrometheusRule and the README runbook all depend on it. The chart
+# route also breaks the ServiceMonitor's automatic target detection.
+#
+# Design + the rejected alternatives:
+#   docs/superpowers/specs/2026-09-18-immich-lan-access-design.md
+apiVersion: v1
+kind: Service
+metadata:
+  name: immich-server-lan
+  namespace: immich
+  annotations:
+    # Pin the address: the mobile app stores the URL once, so an auto-assigned
+    # IP that moved after a restart would silently break backup.
+    # `spec.loadBalancerIP` is deprecated; this annotation is the form already
+    # used by lb-unifi in this cluster.
+    metallb.universe.tf/loadBalancerIPs: 192.168.20.20
+spec:
+  type: LoadBalancer
+  # Same three labels the chart's own Service selects on, so this follows the
+  # pod through rollouts rather than pinning to a ReplicaSet.
+  selector:
+    app.kubernetes.io/name: server
+    app.kubernetes.io/instance: immich
+    app.kubernetes.io/controller: main
+  ports:
+    # API only. metrics-api (8081) and metrics-ms (8082) exist on the container
+    # and on the chart's ClusterIP Service, but are deliberately NOT published
+    # to the LAN. targetPort is the *named* container port, so this survives a
+    # future renumbering upstream.
+    - name: http
+      port: 2283
+      targetPort: http
+      protocol: TCP
+  # externalTrafficPolicy is intentionally left at the default `Cluster`.
+  # `Local` would preserve the client IP but only answers on nodes actually
+  # running a pod, which is fragile with a single replica.

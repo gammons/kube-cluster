@@ -1,9 +1,21 @@
 # immich
 
-Self-hosted photo library ([Immich](https://immich.app) v3.2.0), reachable **only
-over Tailscale** at `http://immich.rya-scala.ts.net:2283` — there is no Ingress, no
-cert-manager certificate and no public DNS record; exposure is a Tailscale L4
-Service proxy created by the `tailscale.com/expose` annotation in `values.yml`. The
+Self-hosted photo library ([Immich](https://immich.app) v3.2.0), reachable two ways
+and **not** from the public internet — there is no Ingress, no cert-manager
+certificate and no public DNS record:
+
+| From | URL | How |
+|---|---|---|
+| anywhere on the tailnet | `http://immich.rya-scala.ts.net:2283` | Tailscale L4 proxy, from the `tailscale.com/expose` annotation in `values.yml` |
+| the house WiFi | `http://192.168.20.20:2283` | MetalLB `LoadBalancer`, from `lan-service.yml` |
+
+The LAN address exists so a phone can back up without Tailscale installed; it is a
+recorded deviation from the original Tailscale-only design
+(`docs/superpowers/specs/2026-09-18-immich-lan-access-design.md`). Anyone on the
+WiFi can reach the login page over plain HTTP — Immich still requires
+authentication, and this matches how `registry` and the UniFi controller are
+already exposed. Only port 2283 is published; the metrics ports are not. Backup
+from a LAN-only phone runs at home and pauses elsewhere. The
 photo library itself lives on the NFS `nfs-bulk` pool (PVC `immich-library`, 2Ti),
 the database is a hand-written single-replica PostgreSQL 17 StatefulSet
 (`postgres.yml`) using Immich's own image so VectorChord is preinstalled, and
