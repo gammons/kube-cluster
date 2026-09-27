@@ -1,0 +1,24 @@
+# Tailnet access for when clients are away from the home network. The MetalLB
+# Service in service.yml remains the LAN path; this is a separate ClusterIP
+# Service (same pattern as immich-server / loki-tailscale) so either exposure
+# can change without affecting the other.
+#
+# The Tailscale operator sees the annotation and runs a proxy pod in the
+# `tailscale` namespace that joins the tailnet as `cliproxyapi`:
+#   http://cliproxyapi.rya-scala.ts.net:8317/v1
+apiVersion: v1
+kind: Service
+metadata:
+  name: cliproxyapi-tailscale
+  namespace: cliproxyapi
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: "cliproxyapi"
+spec:
+  type: ClusterIP
+  selector:
+    app: cliproxyapi
+  ports:
+    - name: http
+      port: 8317
+      targetPort: http

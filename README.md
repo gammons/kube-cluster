@@ -98,4 +98,7 @@ promtail:
 1. run pvc.yml
 1. run deployment.yml
 
+### CLIProxyAPI
+
+1. Follow `cliproxyapi/README.md`.
 
