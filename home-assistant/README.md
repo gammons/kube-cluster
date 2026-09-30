@@ -114,6 +114,39 @@ The Honeywell panel is integrated via an Envisalink EVL-4 at `192.168.1.32`.
 - Debug logging if needed: add `logger:` → `logs:` → `homeassistant.components.envisalink_new: debug` to configuration.yaml and restart.
 - "Show keypad" option (Settings → Devices & Services → EyezOn → Configure) is set to `never` so the UI doesn't prompt for the code; the stored code is sent automatically.
 
+## Emporia Vue energy monitor (2026-09-30)
+
+The Emporia Vue at `192.168.1.193` runs stock Emporia firmware, which has no local API (ports 80/443/6053 are all closed), so it is integrated through Emporia's cloud.
+
+**Uses the [`emporia_vue`](https://github.com/magico13/ha-emporia-vue) custom component (v0.12.3).** Data is polled from the Emporia cloud and is at best 1-minute resolution.
+
+**Setup pieces (on the PVC, `/config` in the pod):**
+
+- `custom_components/emporia_vue/` — installed manually (no HACS): download the release tarball, then
+  `tar cf - -C <repo>/custom_components emporia_vue | kubectl exec -i -n home-assistant home-assistant-0 -- tar xf - -C /config/custom_components/`
+- `emporia_vue-0.9.3.bak.tar` — the old, never-configured v0.9.3 copy that was replaced. Keep backups outside `custom_components/`, because a second directory with the same `emporia_vue` domain would conflict.
+- Config entry — added via Settings → Devices & Services → Add Integration → Emporia Vue, using the Emporia app email/password. Credentials live in the HA config entry, not in this repo or `secrets.yaml`.
+
+**Notes:**
+
+- v0.12.x requires `boto3>=1.37.1,<1.43.0`; HA 2026.4.2 ships boto3 1.37.1. Before upgrading HA or this component, check the new `manifest.json` requirements against the container: `kubectl exec -n home-assistant home-assistant-0 -- pip show boto3`.
+- Restarting HA to pick up a new custom component: `kubectl exec -n home-assistant home-assistant-0 -- kill -TERM <pid of "python3 -m homeassistant">`. The s6 finish script halts the container, and kubelet restarts it in the same pod (same node, volume stays attached), which avoids the Longhorn/Zigbee issues of deleting the pod.
+- The device is a Vue 2 (`VUE002`).
+- Local alternative: Vue 2/3 can be serial-flashed with ESPHome ([emporia-vue-local/esphome](https://github.com/emporia-vue-local/esphome)) for ~1s local updates, at the cost of the Emporia app/cloud and a community-maintained component.
+
+### Energy panel and Power dashboard
+
+Both are built on the Emporia sensors and live in HA's `.storage` (UI-managed). Copies are kept in this repo for restore:
+
+- `energy-prefs.json` — Energy panel settings (Settings → Dashboards → Energy). Grid = `sensor.main_energy_today` at a fixed $0.0809/kWh, with `sensor.main_power_minute_average` as live power. Each of the 16 circuits is an individual device (`sensor.<circuit>_energy_today` + `_power_minute_average`). `Balance` is deliberately excluded, because the panel computes untracked usage itself.
+- `power-dashboard.yaml` — the "Power" sidebar dashboard (URL `/power-monitor`; HA requires a hyphen in dashboard URL paths). It uses only core cards (no HACS). The power-flow and usage-history cards read from the Energy panel settings, so they break if those are removed.
+- Cost is tracked by `sensor.main_energy_today_cost`, which HA creates from the grid price. It only counts from when the price was set (2026-09-30).
+
+**To restore or change:**
+
+- Dashboard: open it → ✏️ → ⋮ → Raw configuration editor, and paste `power-dashboard.yaml`. If the dashboard itself is gone, first recreate it in Settings → Dashboards with URL `power-monitor`.
+- Energy settings: re-enter them in the UI from `energy-prefs.json`, or send it over the websocket API as `{"type": "energy/save_prefs", ...contents}`. The API needs a long-lived access token (Profile → Security); revoke the token afterwards.
+
 ### Notes
 
 - The Longhorn volume replica count was reduced from 3 to 1 during the 2026-04-11 incident. Consider scaling back to 2+ for redundancy:

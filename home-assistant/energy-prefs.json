@@ -1,0 +1,99 @@
+{
+  "energy_sources": [
+    {
+      "type": "grid",
+      "stat_energy_from": "sensor.main_energy_today",
+      "stat_energy_to": null,
+      "stat_cost": null,
+      "entity_energy_price": null,
+      "number_energy_price": 0.0809,
+      "stat_compensation": null,
+      "entity_energy_price_export": null,
+      "number_energy_price_export": null,
+      "stat_rate": "sensor.main_power_minute_average",
+      "cost_adjustment_day": 0
+    }
+  ],
+  "device_consumption": [
+    {
+      "stat_consumption": "sensor.main_ac_energy_today",
+      "stat_rate": "sensor.main_ac_power_minute_average",
+      "name": "Main AC"
+    },
+    {
+      "stat_consumption": "sensor.ev_charger_energy_today",
+      "stat_rate": "sensor.ev_charger_power_minute_average",
+      "name": "EV charger"
+    },
+    {
+      "stat_consumption": "sensor.water_heater_energy_today",
+      "stat_rate": "sensor.water_heater_power_minute_average",
+      "name": "Water heater"
+    },
+    {
+      "stat_consumption": "sensor.den_office_energy_today",
+      "stat_rate": "sensor.den_office_power_minute_average",
+      "name": "Den + office"
+    },
+    {
+      "stat_consumption": "sensor.basement_kit_fan_energy_today",
+      "stat_rate": "sensor.basement_kit_fan_power_minute_average",
+      "name": "Basement kit fan"
+    },
+    {
+      "stat_consumption": "sensor.fridge_energy_today",
+      "stat_rate": "sensor.fridge_power_minute_average",
+      "name": "Fridge"
+    },
+    {
+      "stat_consumption": "sensor.kitchen_ac_energy_today",
+      "stat_rate": "sensor.kitchen_ac_power_minute_average",
+      "name": "Kitchen AC"
+    },
+    {
+      "stat_consumption": "sensor.master_bedroom_energy_today",
+      "stat_rate": "sensor.master_bedroom_power_minute_average",
+      "name": "Master bedroom"
+    },
+    {
+      "stat_consumption": "sensor.unknown_energy_today",
+      "stat_rate": "sensor.unknown_power_minute_average",
+      "name": "Unknown circuit"
+    },
+    {
+      "stat_consumption": "sensor.dishwasher_disposal_energy_today",
+      "stat_rate": "sensor.dishwasher_disposal_power_minute_average",
+      "name": "Dishwasher/disposal"
+    },
+    {
+      "stat_consumption": "sensor.espresso_machine_energy_today",
+      "stat_rate": "sensor.espresso_machine_power_minute_average",
+      "name": "Espresso machine"
+    },
+    {
+      "stat_consumption": "sensor.master_bath_energy_today",
+      "stat_rate": "sensor.master_bath_power_minute_average",
+      "name": "Master bath"
+    },
+    {
+      "stat_consumption": "sensor.center_hall_energy_today",
+      "stat_rate": "sensor.center_hall_power_minute_average",
+      "name": "Center hall"
+    },
+    {
+      "stat_consumption": "sensor.downstairs_bath_energy_today",
+      "stat_rate": "sensor.downstairs_bath_power_minute_average",
+      "name": "Downstairs bath"
+    },
+    {
+      "stat_consumption": "sensor.washer_dryer_energy_today",
+      "stat_rate": "sensor.washer_dryer_power_minute_average",
+      "name": "Washer/dryer"
+    },
+    {
+      "stat_consumption": "sensor.deck_side_gfi_pond_light_energy_today",
+      "stat_rate": "sensor.deck_side_gfi_pond_light_power_minute_average",
+      "name": "Deck GFI / pond light"
+    }
+  ]
+}
