@@ -12,6 +12,30 @@ Delete via:
 helm uninstall -n home-assistant -f values.yml
 ```
 
+## Tailnet access
+
+| Path | URL | Works from |
+|------|-----|------------|
+| Tailnet | `http://home-assistant.rya-scala.ts.net:8124` | any device running Tailscale with MagicDNS, at home or away |
+| LAN | `http://<node-ip>:30285` | the home network only (Helm chart's NodePort) |
+
+`tailscale-service.yml` is a separate ClusterIP Service, not part of the Helm values, so it
+is applied with kubectl and does not need the broken `helm upgrade`:
+```bash
+kubectl --context local-k3s apply -f tailscale-service.yml
+```
+
+The Tailscale operator runs an L4 proxy pod for it in the `tailscale` namespace. Traffic is
+passed through unmodified (no `X-Forwarded-For`), so HA needs no `http:` /
+`trusted_proxies` config. WireGuard encrypts it, so plain HTTP is fine.
+
+Verify:
+```bash
+kubectl --context local-k3s -n tailscale get pods \
+  -l tailscale.com/parent-resource=home-assistant-tailscale
+curl -fsS -o /dev/null -w '%{http_code}\n' http://home-assistant.rya-scala.ts.net:8124/
+```
+
 ## Troubleshooting
 
 ### Pod stuck in ContainerCreating with "already mounted or mount point busy" (2026-04-11)

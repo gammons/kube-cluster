@@ -1,0 +1,25 @@
+# Tailnet access for when clients are away from the home network. The Helm
+# chart's NodePort Service remains the LAN path; this is a separate ClusterIP
+# Service (same pattern as cliproxyapi / immich-server) so either exposure can
+# change without affecting the other, and without a helm upgrade.
+#
+# The Tailscale operator sees the annotation and runs a proxy pod in the
+# `tailscale` namespace that joins the tailnet as `home-assistant`:
+#   http://home-assistant.rya-scala.ts.net:8124
+apiVersion: v1
+kind: Service
+metadata:
+  name: home-assistant-tailscale
+  namespace: home-assistant
+  annotations:
+    tailscale.com/expose: "true"
+    tailscale.com/hostname: "home-assistant"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: home-assistant
+    app.kubernetes.io/name: home-assistant
+  ports:
+    - name: http
+      port: 8124
+      targetPort: http
