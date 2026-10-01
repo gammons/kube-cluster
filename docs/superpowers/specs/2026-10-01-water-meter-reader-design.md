@@ -89,16 +89,19 @@ Python package `water_meter` with one module per job:
 
 Unit values live in the ConfigMap so they can be corrected without a rebuild:
 
-- `wheel_units`: value of the last odometer wheel, default `1` gallon.
-- `needle_units_per_rev`: value of one needle revolution, default `1` gallon.
+- `wheel_units`: value of the last odometer wheel, default `0.1` gallon. The wheels advanced about 1,700 counts in two days; at 0.1 gal that is about 85 gal/day, which matches the household. At 1 gal it would be 850 gal/day, which is implausible. The current reading is therefore about 17,725.5 gallons.
+- `needle_units_per_rev`: value of one needle revolution, default `1` gallon (dial numbers 0-9 are 0.1 gal, minor ticks 0.01 gal).
 
-Defaults are provisional. They are confirmed during calibration by comparing the meter to the utility bill and with a bucket test (run a known volume, watch needle and wheels).
+Defaults are confirmed during calibration with a bucket test (run a known volume, watch needle and wheels) and by the wheel/needle consistency check below.
 
 ### Combining a reading
 
-1. Resolve the wheels right to left. The needle fraction determines whether the last wheel has rolled; each wheel's fractional reading resolves whether the wheel to its left has rolled (the AI-on-the-edge post-processing rule). The result is an integer count of `wheel_units`.
-2. `total = integer_wheels * wheel_units + needle_fraction * needle_units_per_rev` (with the default units, wheels give whole gallons and the needle gives the fraction).
-3. Flow at any rate is derived from changes in `total`, so the needle spinning several revolutions between samples at high flow does not cause aliasing.
+The needle is authoritative within one revolution; the wheels only decide which revolution the meter is on.
+
+1. Resolve the wheels right to left into one value `W` in gallons. Each wheel's fractional reading decides whether the wheel to its left has rolled (the AI-on-the-edge post-processing rule); the last wheel keeps its fraction.
+2. With `R = needle_units_per_rev` and needle fraction `f`, choose the integer `k` that puts `R * (k + f)` closest to `W`. Then `total = R * (k + f)`.
+3. If `|total - W|` exceeds `consistency_tolerance` (default `0.3 * R`), the wheels and the needle disagree and the sample is discarded. This also catches wrong unit settings during calibration.
+4. Flow at any rate is derived from changes in `total`, so the needle spinning several revolutions between samples at high flow does not cause aliasing.
 
 If the needle is not found, or any wheel's classifier confidence is below a configured threshold, the sample is discarded.
 
@@ -125,7 +128,7 @@ Port 8080.
 
 ```json
 {
-  "total_gal": 177255.56,
+  "total_gal": 17725.556,
   "flow_gpm": 0.0,
   "continuous_flow_minutes": 0,
   "status": "ok",
