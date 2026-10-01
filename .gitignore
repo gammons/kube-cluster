@@ -5,3 +5,7 @@
 
 # superpowers SDD scratch (briefs, reports, review packages, progress ledger)
 .superpowers/
+
+# water meter reader
+water-meter/secret.yml
+water-meter/app/.venv/

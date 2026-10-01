@@ -1,0 +1,6 @@
+fastapi==0.142.2
+uvicorn==0.54.0
+opencv-python-headless==5.0.0.93
+numpy==2.5.3
+ai-edge-litert==2.2.0
+pyyaml==6.0.3
