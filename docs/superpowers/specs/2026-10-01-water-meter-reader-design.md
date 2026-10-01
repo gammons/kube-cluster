@@ -89,7 +89,7 @@ Python package `water_meter` with one module per job:
 
 Unit values live in the ConfigMap so they can be corrected without a rebuild:
 
-- `wheel_units`: value of the last odometer wheel, default `0.1` gallon. The wheels advanced about 1,700 counts in two days; at 0.1 gal that is about 85 gal/day, which matches the household. At 1 gal it would be 850 gal/day, which is implausible. The current reading is therefore about 17,725.5 gallons.
+- `wheel_units`: value of the last odometer wheel, default `0.1` gallon. The wheels advanced about 1,700 counts in two days; at 0.1 gal that is about 85 gal/day, which matches the household. At 1 gal it would be 850 gal/day, which is implausible. The current reading is therefore about 177,255.5 gallons.
 - `needle_units_per_rev`: value of one needle revolution, default `1` gallon (dial numbers 0-9 are 0.1 gal, minor ticks 0.01 gal).
 
 Defaults are confirmed during calibration with a bucket test (run a known volume, watch needle and wheels) and by the wheel/needle consistency check below.
@@ -128,7 +128,7 @@ Port 8080.
 
 ```json
 {
-  "total_gal": 17725.556,
+  "total_gal": 177255.56,
   "flow_gpm": 0.0,
   "continuous_flow_minutes": 0,
   "status": "ok",
