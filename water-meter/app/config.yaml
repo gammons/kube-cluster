@@ -3,19 +3,19 @@
 # Regenerate with: python -m water_meter.calibrate <frame.jpg> config.yaml <out_dir>
 calibration:
   rotation_deg: 12.0
-  meter_crop: [780, 550, 500, 500]
+  meter_crop: [830, 600, 420, 420]
   digit_boxes:
-    - [10, 20, 22, 32]
-    - [42, 20, 22, 32]
-    - [74, 20, 22, 32]
-    - [106, 20, 22, 32]
-    - [138, 20, 22, 32]
-    - [170, 20, 22, 32]
-    - [202, 20, 22, 32]
-    - [234, 20, 22, 32]
-  dial_center: [290, 330]
-  hub_radius: 12
-  rim_radius: 90
+    - [72, 135, 20, 32]
+    - [102, 135, 20, 32]
+    - [133, 135, 20, 32]
+    - [166, 135, 20, 32]
+    - [203, 135, 20, 32]
+    - [234, 135, 20, 32]
+    - [267, 135, 20, 32]
+    - [301, 135, 20, 32]
+  dial_center: [255, 272]
+  hub_radius: 11
+  rim_radius: 78
   zero_angle_deg: 0
 
 tuning:
