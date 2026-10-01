@@ -7,7 +7,7 @@ from pathlib import Path
 import uvicorn
 
 from water_meter.api import create_app
-from water_meter.capture import grab_frame
+from water_meter.capture import grab_frames
 from water_meter.config import load_config
 from water_meter.digits import DigitReader
 from water_meter.service import MeterService
@@ -24,7 +24,7 @@ def main() -> int:
     service = MeterService(
         config,
         reader,
-        partial(grab_frame, rtsp_url),
+        partial(grab_frames, rtsp_url, count=int(config.tuning.burst_frames)),
         Path(os.environ.get("STATE_PATH", "/state/state.json")),
     )
     app = create_app(service, interval_s=config.tuning.sample_interval_s)

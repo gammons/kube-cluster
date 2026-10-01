@@ -12,7 +12,7 @@ def read_needle(meter: np.ndarray, cal: Calibration, min_pixels: int = 20) -> fl
     """Return the needle position as a fraction of a revolution from the dial's zero, clockwise."""
     hsv = cv2.cvtColor(meter, cv2.COLOR_BGR2HSV)
     hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    red = ((hue < 10) | (hue > 170)) & (sat > 60) & (val > 60)
+    red = ((hue < 10) | (hue >= 155)) & (sat > 60) & (val > 60)
 
     ys, xs = np.nonzero(red)
     dx = xs - cal.dial_center[0]

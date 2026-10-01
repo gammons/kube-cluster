@@ -68,3 +68,9 @@ def test_ir_frame_has_no_needle():
     cal = load_config(APP / "config.yaml").calibration
     meter = deskew(cv2.imread(str(FIXTURES / "ir.jpg")), cal)
     assert read_needle(meter, cal) is None
+
+
+def test_pinkish_needle_found():
+    cal = load_config(APP / "config.yaml").calibration
+    meter = deskew(cv2.imread(str(FIXTURES / "flow_pink_needle.jpg")), cal)
+    assert read_needle(meter, cal) == pytest.approx(0.53, abs=0.02)

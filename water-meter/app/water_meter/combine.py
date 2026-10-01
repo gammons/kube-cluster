@@ -18,15 +18,16 @@ def _dial_distance(a: float, b: float) -> float:
 def resolve_reading(wheels: list[float], needle: float, tuning: Tuning) -> float:
     """Combine raw wheel values (0-10, left to right) and the needle fraction into gallons.
 
-    The last wheel turns continuously with the needle; the wheels to its left only
-    advance while their right neighbour passes from 9 to 0.
+    One needle revolution moves the last wheel by one digit, so the last wheel's
+    position is ``digit + needle``. The wheels to its left only advance while their
+    right neighbour passes from 9 to 0.
     """
-    last_wheel = needle * 10.0
-    if _dial_distance(wheels[-1], last_wheel) > tuning.consistency_tolerance * 10.0:
+    last_digit = min(range(10), key=lambda n: _dial_distance(wheels[-1], n + needle))
+    right = last_digit + needle
+    if _dial_distance(wheels[-1], right) > tuning.consistency_tolerance:
         raise InconsistentReading(f"last wheel {wheels[-1]:.1f} disagrees with needle {needle:.3f}")
 
-    right = last_wheel
-    digits: list[int] = []
+    digits = [last_digit]
     for raw in reversed(wheels[:-1]):
         advance = max(0.0, right - 9.0)
         digit = min(range(10), key=lambda n: _dial_distance(raw, n + advance))
@@ -34,44 +35,69 @@ def resolve_reading(wheels: list[float], needle: float, tuning: Tuning) -> float
         right = digit + advance
 
     whole = int("".join(str(d) for d in digits))
-    return (whole + needle) * tuning.needle_units_per_rev
+    return whole * tuning.wheel_units + needle * tuning.needle_units_per_rev
 
 
 class Plausibility:
+    """Accepts a reading only if it is physically consistent with the last accepted one.
+
+    Jumps above ``confirm_jump_gal`` (and the very first reading) must be confirmed by
+    ``confirm_samples`` consecutive consistent readings. Readings that stay rejected but
+    consistent with each other for ``recovery_minutes`` replace the stored value.
+    """
+
     def __init__(self, tuning: Tuning, last_total: float | None = None, last_ts: datetime | None = None):
         self._tuning = tuning
         self.last_total = last_total
         self.last_ts = last_ts
         self.last_rejection: str | None = None
+        self._pending: list[tuple[float, datetime]] = []
         self._rejected: list[tuple[float, datetime]] = []
+
+    def _consistent(self, earlier: tuple[float, datetime], total: float, ts: datetime) -> bool:
+        t = self._tuning
+        value, then = earlier
+        elapsed_min = max(0.0, (ts - then).total_seconds() / 60.0)
+        delta = total - value
+        return -t.jitter_gal <= delta <= t.max_gpm * elapsed_min + t.jitter_gal
+
+    def _extend(self, chain: list[tuple[float, datetime]], total: float, ts: datetime) -> None:
+        if chain and not self._consistent(chain[-1], total, ts):
+            chain.clear()
+        chain.append((total, ts))
 
     def _accept(self, total: float, ts: datetime) -> float:
         self.last_total = total
         self.last_ts = ts
         self.last_rejection = None
+        self._pending.clear()
         self._rejected.clear()
         return total
+
+    def _confirm(self, total: float, ts: datetime, reason: str) -> float | None:
+        self._rejected.clear()
+        self._extend(self._pending, total, ts)
+        if len(self._pending) >= self._tuning.confirm_samples:
+            return self._accept(total, ts)
+        self.last_rejection = reason
+        return None
 
     def check(self, total: float, ts: datetime) -> float | None:
         t = self._tuning
         if self.last_total is None or self.last_ts is None:
-            return self._accept(total, ts)
+            return self._confirm(total, ts, "awaiting confirmation of first reading")
 
         delta = total - self.last_total
-        elapsed_min = max(0.0, (ts - self.last_ts).total_seconds() / 60.0)
         if -t.jitter_gal <= delta < 0:
             return self._accept(self.last_total, ts)
-        if delta < 0:
-            reason = f"went backwards by {-delta:.3f} gal"
-        elif delta > t.max_gpm * elapsed_min + t.jitter_gal:
-            reason = f"jumped {delta:.3f} gal in {elapsed_min:.2f} min"
-        else:
-            return self._accept(total, ts)
+        if self._consistent((self.last_total, self.last_ts), total, ts):
+            if delta <= t.confirm_jump_gal:
+                return self._accept(total, ts)
+            return self._confirm(total, ts, f"awaiting confirmation of {delta:.3f} gal jump")
 
-        self.last_rejection = reason
-        self._rejected.append((total, ts))
-        while max(v for v, _ in self._rejected) - min(v for v, _ in self._rejected) > t.recovery_agree_gal:
-            self._rejected.pop(0)
+        self._pending.clear()
+        self.last_rejection = f"went backwards by {-delta:.3f} gal" if delta < 0 else f"jumped {delta:.3f} gal"
+        self._extend(self._rejected, total, ts)
         waited = ts - self._rejected[0][1]
         if waited >= timedelta(minutes=t.recovery_minutes):
             log.warning("accepting %.3f gal after %s of consistent rejections (was %.3f)", total, waited, self.last_total)

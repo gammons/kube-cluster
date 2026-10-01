@@ -20,15 +20,18 @@ calibration:
 
 tuning:
   wheel_units: 0.1
-  needle_units_per_rev: 1.0
+  needle_units_per_rev: 0.1
   consistency_tolerance: 0.3
   jitter_gal: 0.02
   max_gpm: 25
   recovery_minutes: 10
-  recovery_agree_gal: 1.0
+  confirm_jump_gal: 1.0
+  confirm_samples: 3
   still_threshold_gal: 0.01
   still_window_minutes: 15
   flow_window_minutes: 5
   stale_minutes: 5
   min_digit_confidence: 0.6
+  burst_frames: 5
+  burst_agree_gal: 0.05
   sample_interval_s: 15

@@ -47,4 +47,4 @@ def test_real_frame_resolves(reader, meter):
     cal, image = meter
     values = [reader.read(c).value for c in digit_crops(image, cal)]
     total = resolve_reading(values, read_needle(image, cal), Tuning())
-    assert total == pytest.approx(177255.48, abs=0.04)
+    assert total == pytest.approx(177255.5496, abs=0.005)

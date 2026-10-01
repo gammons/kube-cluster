@@ -92,17 +92,42 @@ class MeterService:
             log.warning("cannot save state: %s", exc)
 
     def _read_total(self) -> float:
+        """Read every frame of a burst; return the median total if a majority agree."""
         try:
-            frame = self._grab()
+            frames = self._grab()
         except Exception as exc:
             raise SampleFailed(f"capture: {exc}") from exc
 
+        readings: list[tuple[float, np.ndarray, list[float], float]] = []
+        failures: list[str] = []
+        for frame in frames:
+            try:
+                readings.append(self._read_frame(frame))
+            except SampleFailed as exc:
+                failures.append(str(exc))
+
+        tuning = self._config.tuning
+        majority = len(frames) // 2 + 1
+        if len(readings) < majority:
+            reason = max(set(failures), key=failures.count) if failures else "no frames"
+            raise SampleFailed(reason)
+        totals = sorted(r[0] for r in readings)
+        median = totals[len(totals) // 2]
+        agreeing = [r for r in readings if abs(r[0] - median) <= tuning.burst_agree_gal]
+        if len(agreeing) < majority:
+            raise SampleFailed("frames disagree")
+        total, meter, values, needle = min(agreeing, key=lambda r: abs(r[0] - median))
+        self._store_debug(meter, values, needle, median)
+        return median
+
+    def _read_frame(self, frame: np.ndarray) -> tuple[float, np.ndarray, list[float], float]:
         cal = self._config.calibration
         meter = deskew(frame, cal)
         needle = read_needle(meter, cal)
         results = [self._reader.read(crop) for crop in digit_crops(meter, cal)]
         values = [r.value for r in results]
-        self._store_debug(meter, values, needle)
+        if self._debug_jpeg is None:
+            self._store_debug(meter, values, needle)
 
         if needle is None:
             raise SampleFailed("needle not found")
@@ -113,8 +138,7 @@ class MeterService:
             total = resolve_reading(values, needle, self._config.tuning)
         except InconsistentReading as exc:
             raise SampleFailed("inconsistent wheels and needle") from exc
-        self._store_debug(meter, values, needle, total)
-        return total
+        return total, meter, values, needle
 
     def _store_debug(self, meter, values, needle, total=None) -> None:
         image = render(meter, self._config.calibration, values, needle, total)

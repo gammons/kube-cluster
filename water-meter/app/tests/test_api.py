@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import warm
 from water_meter.api import create_app
 
 
@@ -13,9 +14,9 @@ def client_for(make_service):
     return build
 
 
-def test_reading_endpoint(client_for):
+def test_reading_endpoint(client_for, clock):
     service, client = client_for()
-    service.sample()
+    warm(service, clock)
     response = client.get("/reading")
     assert response.status_code == 200
     body = response.json()

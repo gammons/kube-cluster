@@ -24,18 +24,27 @@ class Clock:
         self.now += timedelta(**kwargs)
 
 
-class FakeCamera:
-    def __init__(self):
-        self.frame = cv2.imread(str(FIXTURES / "color_177255.jpg"))
-        self.fail = False
+def load(name):
+    return cv2.imread(str(FIXTURES / name))
 
-    def use(self, name):
-        self.frame = cv2.imread(str(FIXTURES / name))
+
+class FakeCamera:
+    """Returns a burst of frames; by default five copies of one fixture."""
+
+    def __init__(self):
+        self.frames = [load("color_177255.jpg")] * 5
+        self.fail = False
+        self.on_grab = None
+
+    def use(self, *names):
+        self.frames = [load(n) for n in names] if len(names) > 1 else [load(names[0])] * 5
 
     def __call__(self):
+        if self.on_grab:
+            self.on_grab()
         if self.fail:
             raise CaptureError("connection refused")
-        return self.frame.copy()
+        return [f.copy() for f in self.frames]
 
 
 @pytest.fixture(scope="session")
@@ -51,6 +60,13 @@ def clock():
 @pytest.fixture
 def camera():
     return FakeCamera()
+
+
+def warm(service, clock, samples=3):
+    for i in range(samples):
+        if i:
+            clock.advance(seconds=15)
+        service.sample()
 
 
 @pytest.fixture

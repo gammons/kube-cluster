@@ -53,9 +53,15 @@ Tags: `latest` and `sha-<short sha>`. To roll forward, change the `sha-` tag in
 
 ## Units
 
-The last wheel counts 0.1 gal and one needle turn is 1 gal (dial numbers are 0.1 gal,
-small ticks 0.01 gal). These are `wheel_units` and `needle_units_per_rev` in
-`app/config.yaml`.
+The last wheel counts 0.1 gal, and one needle turn is also 0.1 gal: each needle turn
+moves the last wheel by one digit. Dial numbers are 0.01 gal, small ticks 0.001 gal.
+These are `wheel_units` and `needle_units_per_rev` in `app/config.yaml`. Confirmed on
+2026-10-01 with a 1-gallon bucket test: ten needle turns, last wheel advanced ten digits,
+and the service measured 1.03 gal.
+
+Each sample reads a burst of 5 frames and publishes the median when at least 3 agree
+within 0.05 gal. While water runs the model occasionally misreads the spinning last wheel
+on a single frame (about 2% of frames); the vote discards those.
 
 ## Recalibrating
 

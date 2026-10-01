@@ -24,17 +24,20 @@ class Calibration:
 @dataclass(frozen=True)
 class Tuning:
     wheel_units: float = 0.1
-    needle_units_per_rev: float = 1.0
+    needle_units_per_rev: float = 0.1
     consistency_tolerance: float = 0.3
     jitter_gal: float = 0.02
     max_gpm: float = 25.0
     recovery_minutes: float = 10.0
-    recovery_agree_gal: float = 1.0
+    confirm_jump_gal: float = 1.0
+    confirm_samples: float = 3
     still_threshold_gal: float = 0.01
     still_window_minutes: float = 15.0
     flow_window_minutes: float = 5.0
     stale_minutes: float = 5.0
     min_digit_confidence: float = 0.6
+    burst_frames: float = 5
+    burst_agree_gal: float = 0.05
     sample_interval_s: float = 15.0
 
 
@@ -90,8 +93,8 @@ def _tuning(raw) -> Tuning:
         raise ConfigError("tuning must be a mapping")
     _check_keys(raw, Tuning, "tuning")
     tuning = Tuning(**{k: float(v) for k, v in raw.items()})
-    if abs(tuning.needle_units_per_rev - 10 * tuning.wheel_units) > 1e-9:
-        raise ConfigError("needle_units_per_rev must equal 10 * wheel_units")
+    if abs(tuning.needle_units_per_rev - tuning.wheel_units) > 1e-9:
+        raise ConfigError("needle_units_per_rev must equal wheel_units (one needle turn = one last-wheel digit)")
     return tuning
 
 

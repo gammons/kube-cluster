@@ -46,7 +46,7 @@ def test_wrong_box_count_rejected(tmp_path):
 
 
 def test_unit_mismatch_rejected(tmp_path):
-    data = {"calibration": calibration(), "tuning": {"wheel_units": 1.0, "needle_units_per_rev": 1.0}}
+    data = {"calibration": calibration(), "tuning": {"wheel_units": 0.1, "needle_units_per_rev": 1.0}}
     with pytest.raises(ConfigError):
         load_config(write(tmp_path, data))
 
