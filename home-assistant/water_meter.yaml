@@ -1,0 +1,85 @@
+# Water meter package: sensors from the water-meter service and leak alerts.
+# Installed at /config/water_meter.yaml and loaded from configuration.yaml via
+#   homeassistant:
+#     packages:
+#       water_meter: !include water_meter.yaml
+
+rest:
+  - resource: http://water-meter.water-meter.svc.cluster.local:8080/reading
+    scan_interval: 30
+    timeout: 10
+    sensor:
+      - name: Water meter total
+        unique_id: water_meter_total
+        value_template: "{{ value_json.total_gal }}"
+        availability: "{{ value_json.total_gal is number }}"
+        unit_of_measurement: gal
+        device_class: water
+        state_class: total_increasing
+        icon: mdi:water
+      - name: Water flow
+        unique_id: water_flow
+        value_template: "{{ value_json.flow_gpm }}"
+        unit_of_measurement: gal/min
+        state_class: measurement
+        icon: mdi:water-pump
+      - name: Water continuous flow
+        unique_id: water_continuous_flow
+        value_template: "{{ value_json.continuous_flow_minutes }}"
+        unit_of_measurement: min
+        state_class: measurement
+        icon: mdi:timer-sand
+      - name: Water meter status
+        unique_id: water_meter_status
+        value_template: "{{ value_json.status }}"
+        icon: mdi:camera
+
+automation:
+  - id: water_slow_leak
+    alias: Water - possible leak
+    description: Water has not stopped flowing for 2 hours.
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.water_continuous_flow
+        above: 120
+    actions:
+      - action: notify.mobile_app_pixel_10_pro
+        data:
+          title: Possible water leak
+          message: >-
+            Water has been flowing continuously for
+            {{ states('sensor.water_continuous_flow') }} minutes. Check toilets and hoses.
+    mode: single
+
+  - id: water_large_flow
+    alias: Water - heavy use
+    description: More than 1 gal/min for 20 minutes.
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.water_flow
+        above: 1.0
+        for: "00:20:00"
+    actions:
+      - action: notify.mobile_app_pixel_10_pro
+        data:
+          title: Heavy water use
+          message: >-
+            Water has been flowing at over 1 gal/min for 20 minutes
+            ({{ states('sensor.water_flow') }} gal/min now).
+    mode: single
+
+  - id: water_meter_unreadable
+    alias: Water - meter unreadable
+    description: No good reading from the water meter camera for 30 minutes.
+    triggers:
+      - trigger: template
+        value_template: "{{ states('sensor.water_meter_status') != 'ok' }}"
+        for: "00:30:00"
+    actions:
+      - action: notify.mobile_app_pixel_10_pro
+        data:
+          title: Water meter unreadable
+          message: >-
+            The water meter camera has not produced a good reading for 30 minutes
+            (status: {{ states('sensor.water_meter_status') }}).
+    mode: single

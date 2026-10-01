@@ -171,6 +171,40 @@ Both are built on the Emporia sensors and live in HA's `.storage` (UI-managed). 
 - Dashboard: open it → ✏️ → ⋮ → Raw configuration editor, and paste `power-dashboard.yaml`. If the dashboard itself is gone, first recreate it in Settings → Dashboards with URL `power-monitor`.
 - Energy settings: re-enter them in the UI from `energy-prefs.json`, or send it over the websocket API as `{"type": "energy/save_prefs", ...contents}`. The API needs a long-lived access token (Profile → Security); revoke the token afterwards.
 
+## Water meter (2026-10-01)
+
+Water usage and leak alerts come from the `water-meter` service (see `water-meter/README.md`), which reads the meter from a Tapo C113 camera.
+
+**Setup pieces (on the PVC, `/config` in the pod):**
+
+- `water_meter.yaml` — a package (copy of `home-assistant/water_meter.yaml` in this repo) with one `rest:` resource polling `http://water-meter.water-meter.svc.cluster.local:8080/reading` every 30 s, and three automations.
+- `configuration.yaml` — loads it with:
+  ```yaml
+  homeassistant:
+    packages:
+      water_meter: !include water_meter.yaml
+  ```
+  The pre-change copy is `configuration.yaml.bak-water-meter`.
+
+**Entities:**
+
+| Entity | Meaning |
+|--------|---------|
+| `sensor.water_meter_total` | Meter total in gallons (`device_class: water`, `total_increasing`); used by the Energy panel's water consumption |
+| `sensor.water_flow` | Average flow over the last 5 minutes, gal/min |
+| `sensor.water_continuous_flow` | Minutes since the meter last stood still for 15 minutes |
+| `sensor.water_meter_status` | `ok` / `stale` / `error` |
+
+**Alerts (to `notify.mobile_app_pixel_10_pro`):**
+
+- `automation.water_possible_leak` — continuous flow above 120 minutes (running toilet, dripping hose).
+- `automation.water_heavy_use` — flow above 1 gal/min for 20 minutes (hose left on, burst pipe).
+- `automation.water_meter_unreadable` — status not `ok` for 30 minutes (camera offline, spotlight off, view blocked).
+
+Thresholds live in `water_meter.yaml`. To change them, edit the repo copy, copy it into the pod
+(`kubectl exec -i -n home-assistant home-assistant-0 -- sh -c 'cat > /config/water_meter.yaml' < water_meter.yaml`)
+and reload automations (Developer Tools → YAML → Automations). Changes to the `rest:` sensors need a full restart.
+
 ### Notes
 
 - The Longhorn volume replica count was reduced from 3 to 1 during the 2026-04-11 incident. Consider scaling back to 2+ for redundancy:
