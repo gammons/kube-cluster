@@ -9,3 +9,5 @@
 # water meter reader
 water-meter/secret.yml
 water-meter/app/.venv/
+**/__pycache__/
+water-meter/app/.pytest_cache/
