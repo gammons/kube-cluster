@@ -158,13 +158,39 @@ The Emporia Vue at `192.168.1.193` runs stock Emporia firmware, which has no loc
 - The device is a Vue 2 (`VUE002`).
 - Local alternative: Vue 2/3 can be serial-flashed with ESPHome ([emporia-vue-local/esphome](https://github.com/emporia-vue-local/esphome)) for ~1s local updates, at the cost of the Emporia app/cloud and a community-maintained component.
 
+### Two meters, two panels (2026-10-01)
+
+The house has two utility meters feeding two panels. The Vue's main CTs are on **panel 1** only. Panel 2's circuits are individually clamped, with CT leads run over from panel 1. So the Emporia "main" (`sensor.main_*`) is panel 1 only, and the Emporia `Balance` channel (main − all circuits) goes strongly negative and is meaningless.
+
+Circuit → panel, determined by regressing minute-to-minute changes in `main` against each circuit (k≈1 means main sees it, so panel 1; k≈0 means panel 2):
+
+- **Panel 2:** Main AC, Water heater, Kitchen AC, Espresso machine (all k≈0.00), Washer/dryer (per owner; no activity to test).
+- **Panel 1:** EV charger, Den + office, Fridge, Dishwasher/disposal, Master bath, Basement kit fan, Unknown (k≈0.9–1.0).
+- **Untested** (no on/off activity; assumed panel 1): Master bedroom, Center hall, Downstairs bath, Deck GFI / pond light.
+
+If a circuit is moved or a panel-2 circuit gets a CT, update the lists in `templates.yaml`.
+
+`templates.yaml` (copy of `/config/templates.yaml`; `configuration.yaml` has `template: !include templates.yaml`) defines:
+
+- `sensor.panel_2_power` / `sensor.panel_2_energy_today` — the sum of the panel-2 circuits.
+- `sensor.whole_house_power` / `sensor.whole_house_energy_today` — panel 1 + panel 2.
+- `sensor.whole_house_cost_today` — the sum of both grid sources' cost sensors.
+
+The energy sums only include sources whose `last_reset` matches the newest one, so at midnight a partially-reset set of circuits is never added together (which would double count). Any source being unavailable makes the sum unavailable rather than wrong.
+
+Reload after editing: Developer tools → YAML → Template entities, or restart HA. To restart without bouncing the container, call the `homeassistant.restart` service (UI: Settings → ⋮ → Restart).
+
 ### Energy panel and Power dashboard
 
 Both are built on the Emporia sensors and live in HA's `.storage` (UI-managed). Copies are kept in this repo for restore:
 
-- `energy-prefs.json` — Energy panel settings (Settings → Dashboards → Energy). Grid = `sensor.main_energy_today` at a fixed $0.0809/kWh, with `sensor.main_power_minute_average` as live power. Each of the 16 circuits is an individual device (`sensor.<circuit>_energy_today` + `_power_minute_average`). `Balance` is deliberately excluded, because the panel computes untracked usage itself.
-- `power-dashboard.yaml` — the "Power" sidebar dashboard (URL `/power-monitor`; HA requires a hyphen in dashboard URL paths). It uses only core cards (no HACS). The power-flow and usage-history cards read from the Energy panel settings, so they break if those are removed.
-- Cost is tracked by `sensor.main_energy_today_cost`, which HA creates from the grid price. It only counts from when the price was set (2026-09-30).
+- `energy-prefs.json` — Energy panel settings (Settings → Dashboards → Energy). Two grid sources, one per meter, both at a fixed $0.18/kWh (PECO, including distribution):
+  - Grid 1 (panel 1): `sensor.main_energy_today`, live power `sensor.main_power_minute_average`.
+  - Grid 2 (panel 2): `sensor.panel_2_energy_today`, live power `sensor.panel_2_power`.
+
+  Each of the 16 circuits is an individual device (`sensor.<circuit>_energy_today` + `_power_minute_average`). `Balance` is deliberately excluded, because the panel computes untracked usage itself. If meter 2 turns out to be on a different PECO rate, change Grid 2's price.
+- `power-dashboard.yaml` — the "Power" sidebar dashboard (URL `/power-monitor`; HA requires a hyphen in dashboard URL paths). Whole-house tiles, the gauge and the 30-day chart use the `whole_house_*` sensors. It uses only core cards (no HACS). The power-flow and usage-history cards read from the Energy panel settings, so they break if those are removed.
+- Cost is tracked by `sensor.main_energy_today_cost` and `sensor.panel_2_energy_today_cost`, which HA creates from the grid prices. Cost history only starts from 2026-10-01, when the $0.18 price and Grid 2 were set. History before that used $0.0809 and panel 1 only.
 
 **To restore or change:**
 

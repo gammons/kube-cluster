@@ -12,7 +12,7 @@ views:
       heading: Whole house
       icon: mdi:home-lightning-bolt
     - type: gauge
-      entity: sensor.main_power_minute_average
+      entity: sensor.whole_house_power
       name: Using now
       unit: W
       min: 0
@@ -23,17 +23,17 @@ views:
         yellow: 3000
         red: 6000
     - type: tile
-      entity: sensor.main_energy_today
+      entity: sensor.whole_house_energy_today
       name: Used today
     - type: tile
-      entity: sensor.main_energy_today_cost
+      entity: sensor.whole_house_cost_today
       name: Cost today
     - type: tile
-      entity: sensor.main_energy_this_month
-      name: Used this month
-    - type: tile
       entity: sensor.main_power_minute_average
-      name: Power now
+      name: Panel 1 now
+    - type: tile
+      entity: sensor.panel_2_power
+      name: Panel 2 now
   - type: grid
     cards:
     - type: heading
@@ -106,8 +106,12 @@ views:
       title: Whole house
       hours_to_show: 24
       entities:
-      - entity: sensor.main_power_minute_average
+      - entity: sensor.whole_house_power
         name: Whole house
+      - entity: sensor.main_power_minute_average
+        name: Panel 1
+      - entity: sensor.panel_2_power
+        name: Panel 2
       grid_options:
         columns: full
     - type: history-graph
@@ -159,7 +163,7 @@ views:
       stat_types:
       - change
       entities:
-      - entity: sensor.main_energy_today
+      - entity: sensor.whole_house_energy_today
         name: Whole house
       grid_options:
         columns: full

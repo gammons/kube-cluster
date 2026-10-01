@@ -6,12 +6,25 @@
    "stat_energy_to": null,
    "stat_cost": null,
    "entity_energy_price": null,
-   "number_energy_price": 0.0809,
+   "number_energy_price": 0.18,
    "stat_compensation": null,
    "entity_energy_price_export": null,
    "number_energy_price_export": null,
    "stat_rate": "sensor.main_power_minute_average",
-   "cost_adjustment_day": 0
+   "cost_adjustment_day": 0.0
+  },
+  {
+   "type": "grid",
+   "stat_energy_from": "sensor.panel_2_energy_today",
+   "stat_energy_to": null,
+   "stat_cost": null,
+   "entity_energy_price": null,
+   "number_energy_price": 0.18,
+   "stat_compensation": null,
+   "entity_energy_price_export": null,
+   "number_energy_price_export": null,
+   "stat_rate": "sensor.panel_2_power",
+   "cost_adjustment_day": 0.0
   },
   {
    "type": "water",

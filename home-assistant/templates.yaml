@@ -1,0 +1,80 @@
+# Two meters / two panels: the Emporia Vue's main CTs only see panel 1. These sensors add
+# panel 2 (its circuits are individually clamped) to get whole-house totals. See README.
+#
+# Energy sums only include sources whose last_reset matches the newest one, so the midnight
+# rollover never mixes yesterday's and today's values (avoids double counting).
+- sensor:
+    - name: Panel 2 power
+      unique_id: panel_2_power
+      unit_of_measurement: W
+      device_class: power
+      state_class: measurement
+      icon: mdi:flash
+      availability: >-
+        {% set ents = ['sensor.main_ac_power_minute_average', 'sensor.water_heater_power_minute_average',
+                       'sensor.kitchen_ac_power_minute_average', 'sensor.espresso_machine_power_minute_average',
+                       'sensor.washer_dryer_power_minute_average'] %}
+        {{ ents | map('states') | reject('is_number') | list | count == 0 }}
+      state: >-
+        {% set ents = ['sensor.main_ac_power_minute_average', 'sensor.water_heater_power_minute_average',
+                       'sensor.kitchen_ac_power_minute_average', 'sensor.espresso_machine_power_minute_average',
+                       'sensor.washer_dryer_power_minute_average'] %}
+        {{ ents | map('states') | map('float') | sum | round(1) }}
+
+    - name: Panel 2 energy today
+      unique_id: panel_2_energy_today
+      unit_of_measurement: kWh
+      device_class: energy
+      state_class: total_increasing
+      icon: mdi:lightning-bolt
+      availability: >-
+        {% set ents = ['sensor.main_ac_energy_today', 'sensor.water_heater_energy_today',
+                       'sensor.kitchen_ac_energy_today', 'sensor.espresso_machine_energy_today',
+                       'sensor.washer_dryer_energy_today'] %}
+        {{ ents | map('states') | reject('is_number') | list | count == 0 }}
+      state: >-
+        {% set ents = ['sensor.main_ac_energy_today', 'sensor.water_heater_energy_today',
+                       'sensor.kitchen_ac_energy_today', 'sensor.espresso_machine_energy_today',
+                       'sensor.washer_dryer_energy_today'] %}
+        {% set latest = ents | map('state_attr', 'last_reset') | select('string') | max %}
+        {{ ents | select('is_state_attr', 'last_reset', latest) | map('states') | map('float') | sum | round(4) }}
+
+    - name: Whole house power
+      unique_id: whole_house_power
+      unit_of_measurement: W
+      device_class: power
+      state_class: measurement
+      icon: mdi:home-lightning-bolt
+      availability: >-
+        {{ has_value('sensor.main_power_minute_average') and has_value('sensor.panel_2_power') }}
+      state: >-
+        {{ (states('sensor.main_power_minute_average') | float + states('sensor.panel_2_power') | float) | round(1) }}
+
+    - name: Whole house energy today
+      unique_id: whole_house_energy_today
+      unit_of_measurement: kWh
+      device_class: energy
+      state_class: total_increasing
+      icon: mdi:home-lightning-bolt
+      availability: >-
+        {% set ents = ['sensor.main_energy_today', 'sensor.main_ac_energy_today', 'sensor.water_heater_energy_today',
+                       'sensor.kitchen_ac_energy_today', 'sensor.espresso_machine_energy_today',
+                       'sensor.washer_dryer_energy_today'] %}
+        {{ ents | map('states') | reject('is_number') | list | count == 0 }}
+      state: >-
+        {% set ents = ['sensor.main_energy_today', 'sensor.main_ac_energy_today', 'sensor.water_heater_energy_today',
+                       'sensor.kitchen_ac_energy_today', 'sensor.espresso_machine_energy_today',
+                       'sensor.washer_dryer_energy_today'] %}
+        {% set latest = ents | map('state_attr', 'last_reset') | select('string') | max %}
+        {{ ents | select('is_state_attr', 'last_reset', latest) | map('states') | map('float') | sum | round(4) }}
+
+    # Costs are created by the Energy panel from each grid source's price.
+    - name: Whole house cost today
+      unique_id: whole_house_cost_today
+      unit_of_measurement: USD
+      device_class: monetary
+      icon: mdi:currency-usd
+      availability: >-
+        {{ has_value('sensor.main_energy_today_cost') and has_value('sensor.panel_2_energy_today_cost') }}
+      state: >-
+        {{ (states('sensor.main_energy_today_cost') | float + states('sensor.panel_2_energy_today_cost') | float) | round(2) }}
