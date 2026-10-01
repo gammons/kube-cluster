@@ -1,0 +1,41 @@
+apiVersion: v1
+data:
+  config.yaml: |
+    # Calibration for the Tapo C113 view of the Neptune T-10 meter.
+    # Coordinates other than meter_crop are in the deskewed meter crop.
+    # Regenerate with: python -m water_meter.calibrate <frame.jpg> config.yaml <out_dir>
+    calibration:
+      rotation_deg: 12.0
+      meter_crop: [830, 600, 420, 420]
+      digit_boxes:
+        - [73, 134, 20, 32]
+        - [103, 134, 20, 32]
+        - [134, 134, 20, 32]
+        - [167, 134, 20, 32]
+        - [204, 134, 20, 32]
+        - [235, 134, 20, 32]
+        - [268, 134, 20, 32]
+        - [302, 134, 20, 32]
+      dial_center: [255, 272]
+      hub_radius: 11
+      rim_radius: 78
+      zero_angle_deg: 0
+
+    tuning:
+      wheel_units: 0.1
+      needle_units_per_rev: 1.0
+      consistency_tolerance: 0.3
+      jitter_gal: 0.02
+      max_gpm: 25
+      recovery_minutes: 10
+      recovery_agree_gal: 1.0
+      still_threshold_gal: 0.01
+      still_window_minutes: 15
+      flow_window_minutes: 5
+      stale_minutes: 5
+      min_digit_confidence: 0.6
+      sample_interval_s: 15
+kind: ConfigMap
+metadata:
+  name: water-meter-config
+  namespace: water-meter

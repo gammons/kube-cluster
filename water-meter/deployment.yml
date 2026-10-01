@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: water-meter
+  namespace: water-meter
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: water-meter
+  template:
+    metadata:
+      labels:
+        app: water-meter
+    spec:
+      securityContext:
+        fsGroup: 10001
+      containers:
+        - name: water-meter
+          image: ghcr.io/gammons/water-meter:sha-f0b9347
+          env:
+            - name: RTSP_URL
+              valueFrom:
+                secretKeyRef:
+                  name: water-meter-rtsp
+                  key: url
+            - name: CONFIG_PATH
+              value: /config/config.yaml
+            - name: STATE_PATH
+              value: /state/state.json
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: state
+              mountPath: /state
+      volumes:
+        - name: config
+          configMap:
+            name: water-meter-config
+        - name: state
+          persistentVolumeClaim:
+            claimName: water-meter-state

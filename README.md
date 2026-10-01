@@ -102,3 +102,7 @@ promtail:
 
 1. Follow `cliproxyapi/README.md`.
 
+### Water meter
+
+1. Follow `water-meter/README.md`.
+
