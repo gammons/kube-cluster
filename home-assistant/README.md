@@ -201,6 +201,19 @@ Water usage and leak alerts come from the `water-meter` service (see `water-mete
 - `automation.water_heavy_use` — flow above 1 gal/min for 20 minutes (hose left on, burst pipe).
 - `automation.water_meter_unreadable` — status not `ok` for 30 minutes (camera offline, spotlight off, view blocked).
 
+**Water dashboard and Energy panel (2026-10-01):**
+
+- Energy panel: `sensor.water_meter_total` is the water source at a fixed **$0.024/gal**. That is the utility's
+  average-bill figure ($90.86 for 3,780 gal/month), so it includes fixed charges and runs a little high; replace it
+  with the real water + sewer volume rate when known (Settings → Dashboards → Energy → Water → edit). HA creates
+  `sensor.water_meter_total_cost` from it. A copy of the Energy settings is in `energy-prefs.json`.
+- `water-dashboard.yaml` — the "Water" sidebar dashboard (URL `/water-monitor`), core cards only: flow gauge,
+  usage and cost today/this month, gallons per day (30 days) and per hour (2 days) bar charts from long-term
+  statistics, a 24 h flow / continuous-flow history, the three alert toggles, and the reader's annotated frame.
+  Restore it like the Power dashboard (Raw configuration editor).
+- `image.water_meter_camera` — a trigger-based template image in `water_meter.yaml` that fetches the reader's
+  `/debug.jpg` every 30 s. HA fetches it server-side, so it works from phones outside the cluster.
+
 Thresholds live in `water_meter.yaml`. To change them, edit the repo copy, copy it into the pod
 (`kubectl exec -i -n home-assistant home-assistant-0 -- sh -c 'cat > /config/water_meter.yaml' < water_meter.yaml`)
 and reload automations (Developer Tools → YAML → Automations). Changes to the `rest:` sensors need a full restart.

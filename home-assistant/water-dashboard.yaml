@@ -1,0 +1,131 @@
+title: Water
+views:
+- title: Water
+  path: water
+  icon: mdi:water
+  type: sections
+  max_columns: 3
+  sections:
+  - type: grid
+    cards:
+    - type: heading
+      heading: Now
+      icon: mdi:water-pump
+    - type: gauge
+      entity: sensor.water_flow
+      name: Flow now
+      unit: gal/min
+      min: 0
+      max: 10
+      needle: true
+      severity:
+        green: 0
+        yellow: 2
+        red: 5
+    - type: tile
+      entity: sensor.water_continuous_flow
+      name: Flowing without a break
+    - type: tile
+      entity: sensor.water_meter_status
+      name: Meter reader
+    - type: tile
+      entity: sensor.water_meter_total
+      name: Meter total
+    - type: statistic
+      entity: sensor.water_meter_total
+      name: Used today
+      stat_type: change
+      period:
+        calendar:
+          period: day
+    - type: statistic
+      entity: sensor.water_meter_total
+      name: Used this month
+      stat_type: change
+      period:
+        calendar:
+          period: month
+    - type: statistic
+      entity: sensor.water_meter_total_cost
+      name: Cost today
+      stat_type: change
+      period:
+        calendar:
+          period: day
+    - type: statistic
+      entity: sensor.water_meter_total_cost
+      name: Cost this month
+      stat_type: change
+      period:
+        calendar:
+          period: month
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Usage
+      icon: mdi:chart-bar
+    - type: statistics-graph
+      title: Gallons per day
+      entities:
+      - entity: sensor.water_meter_total
+        name: Gallons
+      stat_types:
+      - change
+      period: day
+      days_to_show: 30
+      chart_type: bar
+      hide_legend: true
+      grid_options:
+        columns: full
+    - type: statistics-graph
+      title: Gallons per hour
+      entities:
+      - entity: sensor.water_meter_total
+        name: Gallons
+      stat_types:
+      - change
+      period: hour
+      days_to_show: 2
+      chart_type: bar
+      hide_legend: true
+      grid_options:
+        columns: full
+  - type: grid
+    cards:
+    - type: heading
+      heading: Leak watch
+      icon: mdi:pipe-leak
+    - type: history-graph
+      title: Last 24 hours
+      hours_to_show: 24
+      entities:
+      - entity: sensor.water_flow
+        name: Flow (gal/min)
+      - entity: sensor.water_continuous_flow
+        name: Flowing without a break (min)
+      grid_options:
+        columns: full
+    - type: entities
+      title: Alerts
+      entities:
+      - entity: automation.water_possible_leak
+        name: Possible leak (2 h of flow)
+      - entity: automation.water_heavy_use
+        name: Heavy use (1 gal/min for 20 min)
+      - entity: automation.water_meter_unreadable
+        name: Meter unreadable (30 min)
+      grid_options:
+        columns: full
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: What the reader sees
+      icon: mdi:camera
+    - type: picture-entity
+      entity: image.water_meter_camera
+      show_name: false
+      show_state: false
+      grid_options:
+        columns: full

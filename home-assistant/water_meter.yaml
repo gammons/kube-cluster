@@ -34,6 +34,19 @@ rest:
         value_template: "{{ value_json.status }}"
         icon: mdi:camera
 
+template:
+  # Annotated frame from the reader (/debug.jpg). HA fetches it server-side, so it works
+  # from phones outside the cluster. The changing query string forces a refresh.
+  - triggers:
+      - trigger: time_pattern
+        seconds: "/30"
+      - trigger: homeassistant
+        event: start
+    image:
+      - name: Water meter camera
+        unique_id: water_meter_camera
+        url: "http://water-meter.water-meter.svc.cluster.local:8080/debug.jpg?t={{ now().timestamp() | int }}"
+
 automation:
   - id: water_slow_leak
     alias: Water - possible leak
