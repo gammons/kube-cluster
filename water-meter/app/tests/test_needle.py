@@ -59,18 +59,18 @@ def test_hub_only_returns_none():
 
 
 def test_real_frame():
-    cal = load_config(APP / "config.yaml").calibration
+    cal = load_config(FIXTURES / "config.yaml").calibration
     meter = deskew(cv2.imread(str(FIXTURES / "color_177255.jpg")), cal)
     assert read_needle(meter, cal) == pytest.approx(0.485, abs=0.03)
 
 
 def test_ir_frame_has_no_needle():
-    cal = load_config(APP / "config.yaml").calibration
+    cal = load_config(FIXTURES / "config.yaml").calibration
     meter = deskew(cv2.imread(str(FIXTURES / "ir.jpg")), cal)
     assert read_needle(meter, cal) is None
 
 
 def test_pinkish_needle_found():
-    cal = load_config(APP / "config.yaml").calibration
+    cal = load_config(FIXTURES / "config.yaml").calibration
     meter = deskew(cv2.imread(str(FIXTURES / "flow_pink_needle.jpg")), cal)
     assert read_needle(meter, cal) == pytest.approx(0.53, abs=0.02)

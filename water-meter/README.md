@@ -80,8 +80,15 @@ Done when the digit row is level, each digit box is centred on its glyph, the sm
 circle sits on the red hub, the large circle just inside the tick ring, and the zero
 tick points at the dial's `0`. The digit model is sensitive to 2 px offsets.
 
-If you recalibrate, replace `app/tests/fixtures/color_177255.jpg` with a new frame and
-update the expected readings in the tests. Then regenerate the ConfigMap and restart:
+If the camera only shifted, the boxes and dial centre usually all move by the same
+offset; shift every `digit_boxes` x/y and `dial_center` by it and leave `rotation_deg`
+and `meter_crop` alone.
+
+The older fixture photos are tested against the frozen calibration in
+`app/tests/fixtures/config.yaml`; don't edit it. Instead, replace
+`app/tests/fixtures/color_177713.jpg` with a frame from the new position and update
+`LIVE_EXPECTED` and the total in `test_live_config_reads_current_frame`. Then regenerate
+the ConfigMap and restart:
 
 ```bash
 kubectl create configmap water-meter-config -n water-meter \

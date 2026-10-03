@@ -10,8 +10,10 @@ from water_meter.needle import read_needle
 from water_meter.regions import deskew, digit_crops
 
 APP = Path(__file__).resolve().parent.parent
+FIXTURES = APP / "tests" / "fixtures"
 MODEL = APP / "models" / "dig-class100-0182-s2_q.tflite"
 EXPECTED = [0, 1, 7, 7, 2, 5, 5]
+LIVE_EXPECTED = [0, 1, 7, 7, 7, 1, 3]
 
 
 @pytest.fixture(scope="module")
@@ -21,8 +23,15 @@ def reader():
 
 @pytest.fixture(scope="module")
 def meter():
+    cal = load_config(FIXTURES / "config.yaml").calibration
+    return cal, deskew(cv2.imread(str(FIXTURES / "color_177255.jpg")), cal)
+
+
+@pytest.fixture(scope="module")
+def live_meter():
+    """A frame from the current camera position, read with the live config."""
     cal = load_config(APP / "config.yaml").calibration
-    return cal, deskew(cv2.imread(str(APP / "tests" / "fixtures" / "color_177255.jpg")), cal)
+    return cal, deskew(cv2.imread(str(FIXTURES / "color_177713.jpg")), cal)
 
 
 def dial_distance(a, b):
@@ -48,3 +57,13 @@ def test_real_frame_resolves(reader, meter):
     values = [reader.read(c).value for c in digit_crops(image, cal)]
     total = resolve_reading(values, read_needle(image, cal), Tuning())
     assert total == pytest.approx(177255.5496, abs=0.005)
+
+
+def test_live_config_reads_current_frame(reader, live_meter):
+    cal, image = live_meter
+    results = [reader.read(c) for c in digit_crops(image, cal)]
+    for result, expected in zip(results[:7], LIVE_EXPECTED):
+        assert dial_distance(result.value, expected) <= 0.3, results
+        assert result.confidence >= 0.6, results
+    total = resolve_reading([r.value for r in results], read_needle(image, cal), Tuning())
+    assert total == pytest.approx(177713.505, abs=0.005)

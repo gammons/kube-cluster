@@ -71,7 +71,7 @@ def warm(service, clock, samples=3):
 
 @pytest.fixture
 def make_service(reader, clock, camera, tmp_path):
-    config = load_config(APP / "config.yaml")
+    config = load_config(FIXTURES / "config.yaml")
 
     def build():
         return MeterService(config, reader, camera, tmp_path / "state.json", clock)
