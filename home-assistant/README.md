@@ -209,8 +209,16 @@ Water usage and leak alerts come from the `water-meter` service (see `water-mete
   `sensor.water_meter_total_cost` from it. A copy of the Energy settings is in `energy-prefs.json`.
 - `water-dashboard.yaml` — the "Water" sidebar dashboard (URL `/water-monitor`), core cards only: flow gauge,
   usage and cost today/this month, gallons per day (30 days) and per hour (2 days) bar charts from long-term
-  statistics, a 24 h flow / continuous-flow history, the three alert toggles, and the reader's annotated frame.
+  statistics, a 24 h flow / continuous-flow history, the three alert toggles, the live camera, and the reader's
+  annotated frame.
   Restore it like the Power dashboard (Raw configuration editor).
+- `camera.water_meter_camera` — live view of the Tapo C113, added in the UI as a Generic Camera
+  (2026-10-03) with stream source `rtsp://camera:<password>@192.168.1.48:554/stream1` and no still
+  image URL (the Tapo has none; HA takes stills from the stream). The camera account is the
+  one in the `water-meter-rtsp` secret. The preview and live view need HA's URLs set
+  (Settings → System → Network): local `http://192.168.10.2:30285`, internet
+  `http://home-assistant.rya-scala.ts.net:8124`. Without them HA hands the browser the pod's
+  own address (`10.42.x.x:8123`), which it can't reach, and the video just spins.
 - `image.water_meter_camera` — a trigger-based template image in `water_meter.yaml` that fetches the reader's
   `/debug.jpg` every 30 s. HA fetches it server-side, so it works from phones outside the cluster.
 
