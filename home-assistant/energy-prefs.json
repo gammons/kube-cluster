@@ -53,12 +53,12 @@
   {
    "stat_consumption": "sensor.den_office_energy_today",
    "stat_rate": "sensor.den_office_power_minute_average",
-   "name": "Den + office"
+   "name": "Den / Office / Fish tank"
   },
   {
    "stat_consumption": "sensor.basement_kit_fan_energy_today",
    "stat_rate": "sensor.basement_kit_fan_power_minute_average",
-   "name": "Basement kit fan"
+   "name": "Homelab server"
   },
   {
    "stat_consumption": "sensor.fridge_energy_today",

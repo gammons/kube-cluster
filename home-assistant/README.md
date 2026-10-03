@@ -174,7 +174,11 @@ If a circuit is moved or a panel-2 circuit gets a CT, update the lists in `templ
 
 - `sensor.panel_2_power` / `sensor.panel_2_energy_today` — the sum of the panel-2 circuits.
 - `sensor.whole_house_power` / `sensor.whole_house_energy_today` — panel 1 + panel 2.
-- `sensor.whole_house_cost_today` — the sum of both grid sources' cost sensors.
+- `sensor.whole_house_cost_today` — grand total cost: (panel 1 + panel 2 kWh) × $0.18.
+- `sensor.house_energy_today` — whole house minus the EV charger (the EV is on panel 1, so it is subtracted from `main`; clamped at 0).
+- `sensor.ev_charging_cost_today` / `sensor.house_cost_today` — EV kWh and house kWh × $0.18. EV + house = whole house.
+
+The cost and house sensors are `state_class: total` with a `last_reset` (HA only allows `total` for monetary sensors), so HA keeps long-term statistics for them. That is what the dashboard's "this month" numbers and 30-day EV vs house charts use. Their statistics start on 2026-10-03; `sensor.ev_charger_energy_today` has history from before that. The $0.18 price is written in these templates as well as in the Energy panel. **If the PECO rate changes, update both.** Before 2026-10-03, `whole_house_cost_today` added up the Energy panel's two cost sensors instead.
 
 The energy sums only include sources whose `last_reset` matches the newest one, so at midnight a partially-reset set of circuits is never added together (which would double count). Any source being unavailable makes the sum unavailable rather than wrong.
 
@@ -188,8 +192,8 @@ Both are built on the Emporia sensors and live in HA's `.storage` (UI-managed). 
   - Grid 1 (panel 1): `sensor.main_energy_today`, live power `sensor.main_power_minute_average`.
   - Grid 2 (panel 2): `sensor.panel_2_energy_today`, live power `sensor.panel_2_power`.
 
-  Each of the 16 circuits is an individual device (`sensor.<circuit>_energy_today` + `_power_minute_average`). `Balance` is deliberately excluded, because the panel computes untracked usage itself. If meter 2 turns out to be on a different PECO rate, change Grid 2's price.
-- `power-dashboard.yaml` — the "Power" sidebar dashboard (URL `/power-monitor`; HA requires a hyphen in dashboard URL paths). Whole-house tiles, the gauge and the 30-day chart use the `whole_house_*` sensors. It uses only core cards (no HACS). The power-flow and usage-history cards read from the Energy panel settings, so they break if those are removed.
+  Each of the 16 circuits is an individual device (`sensor.<circuit>_energy_today` + `_power_minute_average`). Two are named for what is on them: `den_office` is "Den / Office / Fish tank" and `basement_kit_fan` is "Homelab server". `Balance` is deliberately excluded, because the panel computes untracked usage itself. If meter 2 turns out to be on a different PECO rate, change Grid 2's price.
+- `power-dashboard.yaml` — the "Power" sidebar dashboard (URL `/power-monitor`; HA requires a hyphen in dashboard URL paths). Layout: three columns across the top — "Now" (whole-house gauge, panel 1, panel 2, EV), "Today" and "This month" (EV / House / Total, with a kWh row and a $ row; Total = the `whole_house_*` sensors). Below them, full-width sections with charts at half width, two per row: live power flow, the 30-day EV vs house cost and kWh charts plus the whole-house kWh chart, the last 24 hours, and usage history. Circuits are full width at the bottom. It uses only core cards (no HACS). The power-flow and usage-history cards read from the Energy panel settings, so they break if those are removed.
 - Cost is tracked by `sensor.main_energy_today_cost` and `sensor.panel_2_energy_today_cost`, which HA creates from the grid prices. Cost history only starts from 2026-10-01, when the $0.18 price and Grid 2 were set. History before that used $0.0809 and panel 1 only.
 
 **To restore or change:**

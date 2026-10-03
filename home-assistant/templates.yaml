@@ -68,13 +68,93 @@
         {% set latest = ents | map('state_attr', 'last_reset') | select('string') | max %}
         {{ ents | select('is_state_attr', 'last_reset', latest) | map('states') | map('float') | sum | round(4) }}
 
-    # Costs are created by the Energy panel from each grid source's price.
+    # EV charging vs the rest of the house. The EV charger is on panel 1, so it is part of
+    # sensor.main_energy_today. Costs use the same $0.18/kWh as both grid sources in the
+    # Energy panel (energy-prefs.json); if the PECO rate changes, update `price` below too.
+    #
+    # These are state_class total with a last_reset (monetary sensors only allow total), so
+    # HA keeps daily/monthly statistics. last_reset is the newest Emporia last_reset and the
+    # state only includes sources already on that day, so a new cycle never starts with
+    # yesterday's numbers in it.
+    - name: House energy today
+      unique_id: house_energy_today
+      unit_of_measurement: kWh
+      device_class: energy
+      state_class: total
+      icon: mdi:home
+      availability: >-
+        {% set ents = ['sensor.main_energy_today', 'sensor.ev_charger_energy_today', 'sensor.main_ac_energy_today',
+                       'sensor.water_heater_energy_today', 'sensor.kitchen_ac_energy_today',
+                       'sensor.espresso_machine_energy_today', 'sensor.washer_dryer_energy_today'] %}
+        {{ ents | map('states') | reject('is_number') | list | count == 0
+           and ents | map('state_attr', 'last_reset') | select('string') | list | count > 0 }}
+      last_reset: >-
+        {% set ents = ['sensor.main_energy_today', 'sensor.ev_charger_energy_today', 'sensor.main_ac_energy_today',
+                       'sensor.water_heater_energy_today', 'sensor.kitchen_ac_energy_today',
+                       'sensor.espresso_machine_energy_today', 'sensor.washer_dryer_energy_today'] %}
+        {{ ents | map('state_attr', 'last_reset') | select('string') | max }}
+      state: >-
+        {% set p2 = ['sensor.main_ac_energy_today', 'sensor.water_heater_energy_today', 'sensor.kitchen_ac_energy_today',
+                     'sensor.espresso_machine_energy_today', 'sensor.washer_dryer_energy_today'] %}
+        {% set ents = ['sensor.main_energy_today', 'sensor.ev_charger_energy_today'] + p2 %}
+        {% set latest = ents | map('state_attr', 'last_reset') | select('string') | max %}
+        {% set fresh = ents | select('is_state_attr', 'last_reset', latest) | list %}
+        {% set main = states('sensor.main_energy_today') | float if 'sensor.main_energy_today' in fresh else 0 %}
+        {% set ev = states('sensor.ev_charger_energy_today') | float if 'sensor.ev_charger_energy_today' in fresh else 0 %}
+        {% set panel2 = p2 | select('in', fresh) | map('states') | map('float') | sum %}
+        {{ ([main - ev, 0] | max + panel2) | round(4) }}
+
+    - name: EV charging cost today
+      unique_id: ev_charging_cost_today
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:car-electric
+      availability: >-
+        {{ has_value('sensor.ev_charger_energy_today')
+           and state_attr('sensor.ev_charger_energy_today', 'last_reset') is string }}
+      last_reset: "{{ state_attr('sensor.ev_charger_energy_today', 'last_reset') }}"
+      state: >-
+        {% set price = 0.18 %}
+        {{ (states('sensor.ev_charger_energy_today') | float * price) | round(4) }}
+
+    - name: House cost today
+      unique_id: house_cost_today
+      unit_of_measurement: USD
+      device_class: monetary
+      state_class: total
+      icon: mdi:home-currency-usd
+      availability: >-
+        {{ has_value('sensor.house_energy_today')
+           and state_attr('sensor.house_energy_today', 'last_reset') is not none }}
+      last_reset: "{{ state_attr('sensor.house_energy_today', 'last_reset') }}"
+      state: >-
+        {% set price = 0.18 %}
+        {{ (states('sensor.house_energy_today') | float * price) | round(4) }}
+
+    # Grand total = house + EV. Same freshness rules as House energy today.
     - name: Whole house cost today
       unique_id: whole_house_cost_today
       unit_of_measurement: USD
       device_class: monetary
+      state_class: total
       icon: mdi:currency-usd
       availability: >-
-        {{ has_value('sensor.main_energy_today_cost') and has_value('sensor.panel_2_energy_today_cost') }}
+        {% set ents = ['sensor.main_energy_today', 'sensor.ev_charger_energy_today', 'sensor.main_ac_energy_today',
+                       'sensor.water_heater_energy_today', 'sensor.kitchen_ac_energy_today',
+                       'sensor.espresso_machine_energy_today', 'sensor.washer_dryer_energy_today'] %}
+        {{ ents | map('states') | reject('is_number') | list | count == 0
+           and ents | map('state_attr', 'last_reset') | select('string') | list | count > 0 }}
+      last_reset: >-
+        {% set ents = ['sensor.main_energy_today', 'sensor.ev_charger_energy_today', 'sensor.main_ac_energy_today',
+                       'sensor.water_heater_energy_today', 'sensor.kitchen_ac_energy_today',
+                       'sensor.espresso_machine_energy_today', 'sensor.washer_dryer_energy_today'] %}
+        {{ ents | map('state_attr', 'last_reset') | select('string') | max }}
       state: >-
-        {{ (states('sensor.main_energy_today_cost') | float + states('sensor.panel_2_energy_today_cost') | float) | round(2) }}
+        {% set price = 0.18 %}
+        {% set ents = ['sensor.main_energy_today', 'sensor.ev_charger_energy_today', 'sensor.main_ac_energy_today',
+                       'sensor.water_heater_energy_today', 'sensor.kitchen_ac_energy_today',
+                       'sensor.espresso_machine_energy_today', 'sensor.washer_dryer_energy_today'] %}
+        {% set latest = ents | map('state_attr', 'last_reset') | select('string') | max %}
+        {% set fresh = ents | select('is_state_attr', 'last_reset', latest) | list %}
+        {{ (fresh | reject('eq', 'sensor.ev_charger_energy_today') | map('states') | map('float') | sum * price) | round(4) }}

@@ -4,16 +4,16 @@ views:
   path: power
   icon: mdi:flash
   type: sections
-  max_columns: 4
+  max_columns: 3
   sections:
   - type: grid
     cards:
     - type: heading
-      heading: Whole house
+      heading: Now
       icon: mdi:home-lightning-bolt
     - type: gauge
       entity: sensor.whole_house_power
-      name: Using now
+      name: Whole house
       unit: W
       min: 0
       max: 10000
@@ -23,18 +23,243 @@ views:
         yellow: 3000
         red: 6000
     - type: tile
-      entity: sensor.whole_house_energy_today
-      name: Used today
-    - type: tile
-      entity: sensor.whole_house_cost_today
-      name: Cost today
-    - type: tile
       entity: sensor.main_power_minute_average
-      name: Panel 1 now
+      name: Panel 1
+      vertical: true
+      grid_options:
+        columns: 4
     - type: tile
       entity: sensor.panel_2_power
-      name: Panel 2 now
+      name: Panel 2
+      vertical: true
+      grid_options:
+        columns: 4
+    - type: tile
+      entity: sensor.ev_charger_power_minute_average
+      name: EV
+      icon: mdi:car-electric
+      vertical: true
+      grid_options:
+        columns: 4
+  # EV / House / Total: one column each, kWh row then $ row. Total = EV + house.
   - type: grid
+    cards:
+    - type: heading
+      heading: Today
+      icon: mdi:calendar-today
+    - type: tile
+      entity: sensor.ev_charger_energy_today
+      name: EV
+      icon: mdi:car-electric
+      vertical: true
+      grid_options:
+        columns: 4
+    - type: tile
+      entity: sensor.house_energy_today
+      name: House
+      icon: mdi:home
+      vertical: true
+      grid_options:
+        columns: 4
+    - type: tile
+      entity: sensor.whole_house_energy_today
+      name: Total
+      icon: mdi:sigma
+      vertical: true
+      grid_options:
+        columns: 4
+    - type: tile
+      entity: sensor.ev_charging_cost_today
+      name: EV
+      icon: mdi:car-electric
+      vertical: true
+      grid_options:
+        columns: 4
+    - type: tile
+      entity: sensor.house_cost_today
+      name: House
+      icon: mdi:home
+      vertical: true
+      grid_options:
+        columns: 4
+    - type: tile
+      entity: sensor.whole_house_cost_today
+      name: Total
+      icon: mdi:sigma
+      vertical: true
+      grid_options:
+        columns: 4
+  - type: grid
+    cards:
+    - type: heading
+      heading: This month
+      icon: mdi:calendar-month
+    # Statistic cards are at least half a section wide, so they are wrapped in a grid
+    # card to get the same EV / House / Total x kWh / $ layout as Today.
+    - type: grid
+      columns: 3
+      square: false
+      grid_options:
+        columns: full
+      cards:
+        - type: statistic
+          entity: sensor.ev_charger_energy_today
+          name: EV
+          icon: mdi:car-electric
+          stat_type: change
+          period:
+            calendar:
+              period: month
+        - type: statistic
+          entity: sensor.house_energy_today
+          name: House
+          icon: mdi:home
+          stat_type: change
+          period:
+            calendar:
+              period: month
+        - type: statistic
+          entity: sensor.whole_house_energy_today
+          name: Total
+          icon: mdi:sigma
+          stat_type: change
+          period:
+            calendar:
+              period: month
+        - type: statistic
+          entity: sensor.ev_charging_cost_today
+          name: EV
+          icon: mdi:car-electric
+          stat_type: change
+          period:
+            calendar:
+              period: month
+        - type: statistic
+          entity: sensor.house_cost_today
+          name: House
+          icon: mdi:home
+          stat_type: change
+          period:
+            calendar:
+              period: month
+        - type: statistic
+          entity: sensor.whole_house_cost_today
+          name: Total
+          icon: mdi:sigma
+          stat_type: change
+          period:
+            calendar:
+              period: month
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Live power flow
+      icon: mdi:transit-connection-variant
+    - type: power-sankey
+      grid_options:
+        columns: 18
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Last 30 days
+      icon: mdi:chart-bar
+    - type: statistics-graph
+      title: EV vs house cost per day
+      chart_type: bar
+      period: day
+      days_to_show: 30
+      stat_types:
+      - change
+      entities:
+      - entity: sensor.ev_charging_cost_today
+        name: EV charging
+      - entity: sensor.house_cost_today
+        name: House
+      grid_options:
+        columns: 18
+    - type: statistics-graph
+      title: EV vs house kWh per day
+      chart_type: bar
+      period: day
+      days_to_show: 30
+      stat_types:
+      - change
+      entities:
+      - entity: sensor.ev_charger_energy_today
+        name: EV charging
+      - entity: sensor.house_energy_today
+        name: House
+      grid_options:
+        columns: 18
+    - type: statistics-graph
+      title: Whole house kWh per day
+      chart_type: bar
+      period: day
+      days_to_show: 30
+      stat_types:
+      - change
+      entities:
+      - entity: sensor.whole_house_energy_today
+        name: Whole house
+      grid_options:
+        columns: 18
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Last 24 hours
+      icon: mdi:chart-line
+    - type: history-graph
+      title: Whole house
+      hours_to_show: 24
+      entities:
+      - entity: sensor.whole_house_power
+        name: Whole house
+      - entity: sensor.main_power_minute_average
+        name: Panel 1
+      - entity: sensor.panel_2_power
+        name: Panel 2
+      grid_options:
+        columns: 18
+    - type: history-graph
+      title: Big loads
+      hours_to_show: 24
+      entities:
+      - entity: sensor.main_ac_power_minute_average
+        name: Main AC
+      - entity: sensor.kitchen_ac_power_minute_average
+        name: Kitchen AC
+      - entity: sensor.water_heater_power_minute_average
+        name: Water heater
+      - entity: sensor.ev_charger_power_minute_average
+        name: EV charger
+      - entity: sensor.fridge_power_minute_average
+        name: Fridge
+      - entity: sensor.basement_kit_fan_power_minute_average
+        name: Homelab server
+      grid_options:
+        columns: 18
+  - type: grid
+    column_span: 3
+    cards:
+    - type: heading
+      heading: Usage history
+      icon: mdi:chart-bar-stacked
+    - type: energy-date-selection
+      grid_options:
+        columns: full
+    - type: energy-devices-detail-graph
+      title: Usage by circuit
+      grid_options:
+        columns: 18
+    - type: energy-devices-graph
+      title: Circuit totals for period
+      grid_options:
+        columns: 18
+  - type: grid
+    column_span: 3
     cards:
     - type: heading
       heading: Circuits now
@@ -50,10 +275,14 @@ views:
       name: Water heater
     - type: tile
       entity: sensor.den_office_power_minute_average
-      name: Den + office
+      name: Den / Office / Fish tank
+      features_position: bottom
+      vertical: false
     - type: tile
       entity: sensor.basement_kit_fan_power_minute_average
-      name: Basement kit fan
+      name: Homelab server
+      features_position: bottom
+      vertical: false
     - type: tile
       entity: sensor.fridge_power_minute_average
       name: Fridge
@@ -87,83 +316,3 @@ views:
     - type: tile
       entity: sensor.deck_side_gfi_pond_light_power_minute_average
       name: Deck GFI / pond light
-  - type: grid
-    column_span: 2
-    cards:
-    - type: heading
-      heading: Live power flow
-      icon: mdi:transit-connection-variant
-    - type: power-sankey
-      grid_options:
-        columns: full
-  - type: grid
-    column_span: 2
-    cards:
-    - type: heading
-      heading: Last 24 hours
-      icon: mdi:chart-line
-    - type: history-graph
-      title: Whole house
-      hours_to_show: 24
-      entities:
-      - entity: sensor.whole_house_power
-        name: Whole house
-      - entity: sensor.main_power_minute_average
-        name: Panel 1
-      - entity: sensor.panel_2_power
-        name: Panel 2
-      grid_options:
-        columns: full
-    - type: history-graph
-      title: Big loads
-      hours_to_show: 24
-      entities:
-      - entity: sensor.main_ac_power_minute_average
-        name: Main AC
-      - entity: sensor.kitchen_ac_power_minute_average
-        name: Kitchen AC
-      - entity: sensor.water_heater_power_minute_average
-        name: Water heater
-      - entity: sensor.ev_charger_power_minute_average
-        name: EV charger
-      - entity: sensor.fridge_power_minute_average
-        name: Fridge
-      - entity: sensor.basement_kit_fan_power_minute_average
-        name: Basement kit fan
-      grid_options:
-        columns: full
-  - type: grid
-    column_span: 2
-    cards:
-    - type: heading
-      heading: Usage history
-      icon: mdi:chart-bar-stacked
-    - type: energy-date-selection
-      grid_options:
-        columns: full
-    - type: energy-devices-detail-graph
-      title: Usage by circuit
-      grid_options:
-        columns: full
-    - type: energy-devices-graph
-      title: Circuit totals for period
-      grid_options:
-        columns: full
-  - type: grid
-    column_span: 2
-    cards:
-    - type: heading
-      heading: Last 30 days
-      icon: mdi:calendar-month
-    - type: statistics-graph
-      title: Whole house kWh per day
-      chart_type: bar
-      period: day
-      days_to_show: 30
-      stat_types:
-      - change
-      entities:
-      - entity: sensor.whole_house_energy_today
-        name: Whole house
-      grid_options:
-        columns: full
