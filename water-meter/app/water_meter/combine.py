@@ -42,8 +42,10 @@ class Plausibility:
     """Accepts a reading only if it is physically consistent with the last accepted one.
 
     Jumps above ``confirm_jump_gal`` (and the very first reading) must be confirmed by
-    ``confirm_samples`` consecutive consistent readings. Readings that stay rejected but
-    consistent with each other for ``recovery_minutes`` replace the stored value.
+    ``confirm_samples`` consecutive consistent readings. Readings below the stored value
+    that stay rejected but consistent with each other for ``recovery_minutes`` replace it.
+    Readings above it are never accepted that way: a jump faster than ``max_gpm`` when it
+    first appears is a misread, however long it persists.
     """
 
     def __init__(self, tuning: Tuning, last_total: float | None = None, last_ts: datetime | None = None):
@@ -65,6 +67,15 @@ class Plausibility:
         if chain and not self._consistent(chain[-1], total, ts):
             chain.clear()
         chain.append((total, ts))
+
+    def _continues_rejected_jump(self, total: float, ts: datetime) -> bool:
+        # A jump that was faster than max_gpm when it first appeared stays impossible,
+        # however long it persists.
+        return (
+            bool(self._rejected)
+            and self._rejected[0][0] > self.last_total
+            and self._consistent(self._rejected[-1], total, ts)
+        )
 
     def _accept(self, total: float, ts: datetime) -> float:
         self.last_total = total
@@ -90,7 +101,7 @@ class Plausibility:
         delta = total - self.last_total
         if -t.jitter_gal <= delta < 0:
             return self._accept(self.last_total, ts)
-        if self._consistent((self.last_total, self.last_ts), total, ts):
+        if not self._continues_rejected_jump(total, ts) and self._consistent((self.last_total, self.last_ts), total, ts):
             if delta <= t.confirm_jump_gal:
                 return self._accept(total, ts)
             return self._confirm(total, ts, f"awaiting confirmation of {delta:.3f} gal jump")
@@ -99,7 +110,7 @@ class Plausibility:
         self.last_rejection = f"went backwards by {-delta:.3f} gal" if delta < 0 else f"jumped {delta:.3f} gal"
         self._extend(self._rejected, total, ts)
         waited = ts - self._rejected[0][1]
-        if waited >= timedelta(minutes=t.recovery_minutes):
+        if delta < 0 and waited >= timedelta(minutes=t.recovery_minutes):
             log.warning("accepting %.3f gal after %s of consistent rejections (was %.3f)", total, waited, self.last_total)
             return self._accept(total, ts)
         return None

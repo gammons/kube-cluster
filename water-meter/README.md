@@ -105,7 +105,31 @@ kubectl --context local-k3s -n water-meter rollout restart deploy/water-meter
 | `needle not found` | Spotlight off / IR mode, or something blocking the dial |
 | `low digit confidence: wheel N` | Glare, blocked view, or digit boxes drifted |
 | `inconsistent wheels and needle` | Misread last wheel, or wrong unit settings |
-| `rejected: ...` | Implausible jump. After 10 minutes of consistent new values the service accepts them |
+| `rejected: went backwards ...` | Implausible drop. After 10 minutes of consistent lower values the service accepts them (this is how it recovers from a bad stored total) |
+| `rejected: jumped ...` | A jump faster than 25 gal/min when it first appeared, e.g. one wheel misread. Never accepted, however long it lasts; the total freezes until good readings return. See below if it never clears |
 
 State (last total, leak streak start) is kept in `/state/state.json` on the
 `water-meter-state` PVC. Deleting it makes the next reading start fresh.
+
+### Stuck on `rejected: jumped ...`
+
+If a too-low misread lasts 10 minutes it is accepted as a recovery, and the true reading
+then looks like an impossible jump and is rejected indefinitely (status `stale`, then the
+"meter unreadable" alert). If `/debug.jpg` shows the correct digits, restart the reader:
+
+```bash
+kubectl --context local-k3s -n water-meter rollout restart deploy/water-meter
+```
+
+After a restart the jump is judged against the time since the last accepted reading, so
+once that is long enough for 25 gal/min to cover it, the true reading is accepted. Don't
+restart while the debug image shows a misread, or the misread gets accepted instead.
+
+### Wheel misread on 2026-10-05
+
+At 22:36 UTC the hundreds wheel rolled from 2 to 3 and the model read it as 7 for about
+half an hour (178,700 instead of 178,300 gal). The old 10-minute recovery accepted it, then
+accepted the true value as a drop 20 minutes later, leaving a +405 / −395 gal spike in
+Home Assistant's statistics (corrected by hand with `recorder/adjust_sum_statistics`).
+Since then a forward jump is only accepted if it fits 25 gal/min from the last accepted
+reading at the moment it first appears.

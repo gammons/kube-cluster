@@ -59,18 +59,49 @@ def test_misread_after_gap_rejected():
     assert p.check(100.5, T0 + timedelta(minutes=15) + STEP) == pytest.approx(100.5)
 
 
-def test_recovery_after_consistent_rejections():
+def test_impossible_jump_never_accepted_however_long_it_persists():
     p = seeded()
-    results = feed(p, [500.0 + i * 0.001 for i in range(42)])
+    # 400 gal appearing 15 s after the last reading; persists for 30 minutes, long past
+    # the 16 minutes in which 25 gal/min could cover 400 gal.
+    results = feed(p, [500.0 + 0.001 * i for i in range(120)])
+    assert all(r is None for r in results)
+    assert p.last_total == 100.0
+
+
+def test_wheel_misread_replay_2026_10_05():
+    # Hundreds wheel read as 7 instead of 3 for half an hour while ~0.35 gal/min flowed.
+    last_good = datetime(2026, 10, 5, 22, 35, 58, tzinfo=timezone.utc)
+    p = Plausibility(Tuning(), last_total=178299.537, last_ts=last_good)
+    step = timedelta(seconds=17)
+    start = last_good + timedelta(seconds=27)
+    misreads = [p.check(178700.417 + 0.1 * i, start + i * step) for i in range(105)]
+    assert all(r is None for r in misreads)
+    assert p.last_total == 178299.537
+
+    after = start + 105 * step
+    truth = [p.check(178310.25 + 0.001 * i, after + i * step) for i in range(3)]
+    assert truth == [None, None, pytest.approx(178310.252)]
+
+
+def test_backwards_recovery_after_consistent_rejections():
+    p = Plausibility(Tuning(), last_total=7777777.384, last_ts=T0)
+    results = feed(p, [177714.0 + i * 0.001 for i in range(42)])
     assert all(r is None for r in results[:40])
     assert results[-1] is not None
-    assert 500.0 <= p.last_total <= 500.1
+    assert 177714.0 <= p.last_total <= 177714.1
 
 
-def test_recovery_while_water_flows():
-    p = seeded()
-    results = feed(p, [500.0 + 0.05 * i for i in range(46)])
+def test_backwards_recovery_while_water_flows():
+    p = Plausibility(Tuning(), last_total=500.0, last_ts=T0)
+    results = feed(p, [100.0 + 0.05 * i for i in range(46)])
     assert any(r is not None for r in results), "a 0.2 gal/min stream of consistent readings should recover"
+
+
+def test_large_jump_after_outage_accepted():
+    p = seeded()
+    back = T0 + timedelta(hours=2)
+    results = [p.check(300.0 + 0.01 * i, back + i * STEP) for i in range(3)]
+    assert results == [None, None, pytest.approx(300.02)]
 
 
 def test_no_recovery_when_rejections_disagree():
