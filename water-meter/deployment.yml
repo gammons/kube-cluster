@@ -19,7 +19,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: water-meter
-          image: ghcr.io/gammons/water-meter:sha-f1e1b73
+          image: ghcr.io/gammons/water-meter:sha-f8be4b4
           env:
             - name: RTSP_URL
               valueFrom:
