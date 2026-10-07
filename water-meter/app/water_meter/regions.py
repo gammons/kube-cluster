@@ -14,5 +14,5 @@ def deskew(frame: np.ndarray, cal: Calibration) -> np.ndarray:
     return cv2.warpAffine(frame, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
 
-def digit_crops(meter: np.ndarray, cal: Calibration) -> list[np.ndarray]:
-    return [meter[y : y + h, x : x + w].copy() for x, y, w, h in cal.digit_boxes]
+def digit_crops(meter: np.ndarray, cal: Calibration, dx: int = 0, dy: int = 0) -> list[np.ndarray]:
+    return [meter[y + dy : y + dy + h, x + dx : x + dx + w].copy() for x, y, w, h in cal.digit_boxes]

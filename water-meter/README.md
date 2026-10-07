@@ -63,6 +63,12 @@ Each sample reads a burst of 5 frames and publishes the median when at least 3 a
 within 0.05 gal. While water runs the model occasionally misreads the spinning last wheel
 on a single frame (about 2% of frames); the vote discards those.
 
+Each wheel except the last is also re-read with its box nudged 1 px left, right, up and
+down (`digit_shift_px`). If any nudge changes the digit by more than half
+(`digit_shift_agree`), the frame is rejected as `unstable digit: wheel N`. A box close
+to the dark edge of the next wheel's window reads that edge as a confident `1`; this
+check turns such a misread into a failed sample instead of a wrong total.
+
 ## Recalibrating
 
 Needed if the camera or meter moves. `app/config.yaml` is the source of truth;
@@ -80,15 +86,20 @@ Done when the digit row is level, each digit box is centred on its glyph, the sm
 circle sits on the red hub, the large circle just inside the tick ring, and the zero
 tick points at the dial's `0`. The digit model is sensitive to 2 px offsets.
 
+The image sits about 3 px further right at night (spotlight) than in daylight, so a box
+that looks centred in one can be on a window edge in the other. Check each box in a day
+and a night frame: nudged ±2 px in every direction it should still read the same digit.
+
 If the camera only shifted, the boxes and dial centre usually all move by the same
 offset; shift every `digit_boxes` x/y and `dial_center` by it and leave `rotation_deg`
 and `meter_crop` alone.
 
 The older fixture photos are tested against the frozen calibration in
-`app/tests/fixtures/config.yaml`; don't edit it. Instead, replace
-`app/tests/fixtures/color_177713.jpg` with a frame from the new position and update
-`LIVE_EXPECTED` and the total in `test_live_config_reads_current_frame`. Then regenerate
-the ConfigMap and restart:
+`app/tests/fixtures/config.yaml`; don't edit it. The live config is tested against a
+daylight frame (`color_177713.jpg`) and a night frame (`night_178637.jpg`) in
+`test_live_config_reads_current_frame` and `test_live_config_reads_day_and_night_frames`.
+If the camera moves, replace both with frames from the new position and update the
+expected digits and totals. Then regenerate the ConfigMap and restart:
 
 ```bash
 kubectl create configmap water-meter-config -n water-meter \
@@ -104,9 +115,10 @@ kubectl --context local-k3s -n water-meter rollout restart deploy/water-meter
 | `capture: ...` | Camera offline, IP changed, or wrong RTSP credentials |
 | `needle not found` | Spotlight off / IR mode, or something blocking the dial |
 | `low digit confidence: wheel N` | Glare, blocked view, or digit boxes drifted |
+| `unstable digit: wheel N` | Wheel N's box is within a pixel of a window edge. Brief bursts while a wheel rolls over are normal; if it persists (e.g. every night), recalibrate that box |
 | `inconsistent wheels and needle` | Misread last wheel, or wrong unit settings |
 | `rejected: went backwards ...` | Implausible drop. After 10 minutes of consistent lower values the service accepts them (this is how it recovers from a bad stored total) |
-| `rejected: jumped ...` | A jump faster than 25 gal/min when it first appeared, e.g. one wheel misread. Never accepted, however long it lasts; the total freezes until good readings return. See below if it never clears |
+| `rejected: jumped ...` | A jump faster than 25 gal/min when it first appeared, e.g. one wheel misread. Never accepted, however long it lasts or whatever stray readings come in between; the total freezes until good readings return. See below if it never clears |
 
 State (last total, leak streak start) is kept in `/state/state.json` on the
 `water-meter-state` PVC. Deleting it makes the next reading start fresh.
@@ -133,3 +145,16 @@ accepted the true value as a drop 20 minutes later, leaving a +405 / −395 gal 
 Home Assistant's statistics (corrected by hand with `recorder/adjust_sum_statistics`).
 Since then a forward jump is only accepted if it fits 25 gal/min from the last accepted
 reading at the moment it first appears.
+
+### Wheel misread on 2026-10-07
+
+At 00:30 UTC the hundreds wheel rolled from 4 to 5 and the model read the 5 as 3 for
+nearly 13 hours (200 gal low). The 10-minute recovery accepted the drop (−188 gal). At
+13:20 the wheel rolled to 6 and read correctly; that +202 gal jump was rejected until a
+stray reading broke the run of rejections at 14:17, after which it was accepted as if the
+camera had been offline. Both were corrected by hand in Home Assistant's statistics.
+
+Cause: wheel 4's box was 1 px from the next window's edge at night (the image shifts
+~3 px between day and night). Fixes: boxes moved to have ≥2 px margin in both day and
+night frames, the ±1 px nudge check above, and impossible jumps are now remembered until
+a reading is accepted, so a stray reading no longer resets them.

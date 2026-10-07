@@ -55,6 +55,7 @@ class Plausibility:
         self.last_rejection: str | None = None
         self._pending: list[tuple[float, datetime]] = []
         self._rejected: list[tuple[float, datetime]] = []
+        self._impossible: list[tuple[float, datetime]] = []
 
     def _consistent(self, earlier: tuple[float, datetime], total: float, ts: datetime) -> bool:
         t = self._tuning
@@ -68,14 +69,10 @@ class Plausibility:
             chain.clear()
         chain.append((total, ts))
 
-    def _continues_rejected_jump(self, total: float, ts: datetime) -> bool:
+    def _continues_impossible_jump(self, total: float, ts: datetime) -> bool:
         # A jump that was faster than max_gpm when it first appeared stays impossible,
-        # however long it persists.
-        return (
-            bool(self._rejected)
-            and self._rejected[0][0] > self.last_total
-            and self._consistent(self._rejected[-1], total, ts)
-        )
+        # however long it persists and whatever stray readings come in between.
+        return any(self._consistent(jump, total, ts) for jump in self._impossible)
 
     def _accept(self, total: float, ts: datetime) -> float:
         self.last_total = total
@@ -83,6 +80,7 @@ class Plausibility:
         self.last_rejection = None
         self._pending.clear()
         self._rejected.clear()
+        self._impossible.clear()
         return total
 
     def _confirm(self, total: float, ts: datetime, reason: str) -> float | None:
@@ -101,11 +99,14 @@ class Plausibility:
         delta = total - self.last_total
         if -t.jitter_gal <= delta < 0:
             return self._accept(self.last_total, ts)
-        if not self._continues_rejected_jump(total, ts) and self._consistent((self.last_total, self.last_ts), total, ts):
+        continues_jump = self._continues_impossible_jump(total, ts)
+        if not continues_jump and self._consistent((self.last_total, self.last_ts), total, ts):
             if delta <= t.confirm_jump_gal:
                 return self._accept(total, ts)
             return self._confirm(total, ts, f"awaiting confirmation of {delta:.3f} gal jump")
 
+        if delta > 0 and not continues_jump:
+            self._impossible.append((total, ts))
         self._pending.clear()
         self.last_rejection = f"went backwards by {-delta:.3f} gal" if delta < 0 else f"jumped {delta:.3f} gal"
         self._extend(self._rejected, total, ts)

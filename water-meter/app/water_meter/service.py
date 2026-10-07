@@ -33,6 +33,11 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _dial_distance(a: float, b: float) -> float:
+    d = abs(a - b) % 10.0
+    return min(d, 10.0 - d)
+
+
 class MeterService:
     def __init__(
         self,
@@ -134,11 +139,27 @@ class MeterService:
         for i, result in enumerate(results[:-1]):
             if result.confidence < self._config.tuning.min_digit_confidence:
                 raise SampleFailed(f"low digit confidence: wheel {i}")
+        self._check_digits_stable(meter, values)
         try:
             total = resolve_reading(values, needle, self._config.tuning)
         except InconsistentReading as exc:
             raise SampleFailed("inconsistent wheels and needle") from exc
         return total, meter, values, needle
+
+    def _check_digits_stable(self, meter: np.ndarray, values: list[float]) -> None:
+        """Re-read each wheel (except the spinning last one) with its box nudged by a pixel.
+
+        A box near the dark edge of a neighbouring window can read a confident wrong digit;
+        if a one-pixel nudge changes the digit, the reading is not trusted.
+        """
+        cal = self._config.calibration
+        tuning = self._config.tuning
+        s = int(tuning.digit_shift_px)
+        shifted = [digit_crops(meter, cal, dx, dy) for dx, dy in ((-s, 0), (s, 0), (0, -s), (0, s))]
+        for i, value in enumerate(values[:-1]):
+            for crops in shifted:
+                if _dial_distance(self._reader.read(crops[i]).value, value) > tuning.digit_shift_agree:
+                    raise SampleFailed(f"unstable digit: wheel {i}")
 
     def _store_debug(self, meter, values, needle, total=None) -> None:
         image = render(meter, self._config.calibration, values, needle, total)

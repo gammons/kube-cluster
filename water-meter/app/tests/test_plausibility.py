@@ -83,6 +83,26 @@ def test_wheel_misread_replay_2026_10_05():
     assert truth == [None, None, pytest.approx(178310.252)]
 
 
+def test_impossible_jump_stays_rejected_after_stray_reading_2026_10_07():
+    # The +202 gal jump appeared 15 s after the last accepted reading. After an hour of
+    # rejections one stray reading broke the run, and the same value then got accepted
+    # as if the camera had been offline.
+    last_good = datetime(2026, 10, 7, 13, 14, 20, tzinfo=timezone.utc)
+    p = Plausibility(Tuning(), last_total=178399.51, last_ts=last_good)
+    step = timedelta(seconds=17)
+    t = last_good + timedelta(seconds=15)
+    results = []
+    for i in range(200):
+        results.append(p.check(178601.6 + 0.0001 * i, t))
+        t += step
+    results.append(p.check(178501.3, t))
+    for i in range(10):
+        t += step
+        results.append(p.check(178601.65 + 0.0001 * i, t))
+    assert all(r is None for r in results)
+    assert p.last_total == 178399.51
+
+
 def test_backwards_recovery_after_consistent_rejections():
     p = Plausibility(Tuning(), last_total=7777777.384, last_ts=T0)
     results = feed(p, [177714.0 + i * 0.001 for i in range(42)])

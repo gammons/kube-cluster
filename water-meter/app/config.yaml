@@ -6,12 +6,12 @@ calibration:
   meter_crop: [830, 600, 420, 420]
   digit_boxes:
     - [60, 104, 20, 32]
-    - [90, 104, 20, 32]
-    - [121, 104, 20, 32]
-    - [154, 104, 20, 32]
-    - [191, 104, 20, 32]
-    - [222, 104, 20, 32]
-    - [255, 104, 20, 32]
+    - [92, 104, 20, 32]
+    - [122, 104, 20, 32]
+    - [155, 104, 20, 32]
+    - [189, 104, 20, 32]
+    - [221, 105, 20, 32]
+    - [256, 105, 20, 32]
     - [289, 104, 20, 32]
   dial_center: [242, 242]
   hub_radius: 11
@@ -32,6 +32,8 @@ tuning:
   flow_window_minutes: 5
   stale_minutes: 5
   min_digit_confidence: 0.6
+  digit_shift_px: 1
+  digit_shift_agree: 0.5
   burst_frames: 5
   burst_agree_gal: 0.05
   sample_interval_s: 15

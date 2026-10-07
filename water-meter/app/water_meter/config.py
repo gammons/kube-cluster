@@ -36,6 +36,8 @@ class Tuning:
     flow_window_minutes: float = 5.0
     stale_minutes: float = 5.0
     min_digit_confidence: float = 0.6
+    digit_shift_px: float = 1
+    digit_shift_agree: float = 0.5
     burst_frames: float = 5
     burst_agree_gal: float = 0.05
     sample_interval_s: float = 15.0
